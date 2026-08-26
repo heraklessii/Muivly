@@ -6,6 +6,7 @@ mod shader;
 mod window;
 mod workerw;
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -29,7 +30,7 @@ pub fn stop() {
 }
 
 /// Create a surface for every monitor and render until stopped.
-pub fn run(profile: &GpuProfile) -> windows::core::Result<()> {
+pub fn run(profile: &GpuProfile, video: Option<&Path>) -> windows::core::Result<()> {
     let target = workerw::find().ok_or_else(|| {
         windows::core::Error::new(
             windows::Win32::Foundation::E_FAIL,
@@ -50,12 +51,19 @@ pub fn run(profile: &GpuProfile) -> windows::core::Result<()> {
             surfaces.push(Surface::create(parent, monitor)?);
         }
 
-        let renderer = Renderer::new(adapter.luid, surfaces)?;
-        println!(
-            "surface: {} monitor(s) on {}",
-            renderer.monitor_count(),
-            adapter.name
-        );
+        let renderer = Renderer::new(adapter.luid, surfaces, video)?;
+        match renderer.video_size() {
+            Some((w, h)) => println!(
+                "surface: {} monitor(s) on {} — decoding {w}x{h}",
+                renderer.monitor_count(),
+                adapter.name
+            ),
+            None => println!(
+                "surface: {} monitor(s) on {}",
+                renderer.monitor_count(),
+                adapter.name
+            ),
+        }
         renderers.push(renderer);
     }
 
@@ -76,10 +84,10 @@ pub fn run(profile: &GpuProfile) -> windows::core::Result<()> {
 
         pump_messages();
 
-        let time = start.elapsed().as_secs_f32();
+        let elapsed = start.elapsed();
         let mut drawn = 0;
         for renderer in &mut renderers {
-            drawn += renderer.draw(time)?;
+            drawn += renderer.draw(elapsed)?;
         }
 
         // Every monitor is covered — by a fullscreen game, a maximised

@@ -5,10 +5,12 @@ A native live wallpaper engine for Windows, built for machines that struggle wit
 [![CI](https://github.com/heraklessii/Muivly/actions/workflows/ci.yml/badge.svg)](https://github.com/heraklessii/Muivly/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-> **Status: early development.** Muivly renders a placeholder wallpaper on
-> every monitor and stops rendering when nothing is visible. It cannot play
-> video yet — the decoder is the next piece. There is no release to download.
-> Star or watch the repo if you want to know when there is.
+> **Status: early development.** Muivly plays a video wallpaper on every
+> monitor, decoded on the GPU, and stops decoding entirely when nothing is
+> visible. There is no settings UI yet — you pass a file path on the command
+> line — and memory use is well above where it needs to be. There is no
+> release to download. Star or watch the repo if you want to know when there
+> is.
 
 ## Why
 
@@ -47,6 +49,29 @@ Planned artifacts, per release:
 
 Windows 10 (1903+) or Windows 11, 64-bit. A GPU with hardware video decode —
 essentially anything from 2014 onward, including integrated graphics.
+
+## Trying it
+
+Build it (see below), then point it at a video file:
+
+```bash
+muivly-core "C:\path\to\wallpaper.mp4"
+```
+
+Ctrl+C stops it and restores your own wallpaper. Without a file it shows a
+placeholder gradient instead.
+
+Measured on a two-monitor hybrid laptop (integrated + discrete GPU, so two
+decoders — the worst case), 1080p video at 30 fps:
+
+| | CPU (one core) |
+|---|---|
+| Desktop visible | 13.7% |
+| Every monitor covered | **0.4%** |
+
+Memory is the honest weak spot right now: around 265 MB, against a target in
+the low tens. Media Foundation's source reader alone spawns most of the 75
+threads the process carries. That is the next thing to fix.
 
 ## Check your hardware
 
@@ -114,9 +139,10 @@ Design notes and the reasoning behind each choice live in [`docs/`](docs/) —
 
 - [x] Hardware capability detection
 - [x] WorkerW injection, one D3D11 device per adapter, per-monitor surfaces
-- [x] Occlusion detection — rendering stops when nothing is visible
-- [ ] Media Foundation decoder
-- [ ] Shared texture across monitors on one adapter
+- [x] Occlusion detection — decoding and rendering stop when nothing is visible
+- [x] Media Foundation decoder — hardware H.264/HEVC/VP9/AV1, zero-copy
+- [ ] Bring memory down (currently ~265 MB with video; too high)
+- [ ] Wallpaper picker and per-monitor assignment
 - [ ] Settings UI
 - [ ] First release
 - [ ] Measured RAM/CPU comparison against the alternatives

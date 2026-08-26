@@ -11,15 +11,17 @@ project_overview.md bölümüne referans.
 
 ## Şimdi (aktif faz)
 
-- [ ] Media Foundation decoder iskeleti (`IMFSourceReader` + D3D11VA wrapper)
-      — artık ekrana çizecek yer var, sıradaki büyük parça bu
-- [ ] Aynı adapter'daki monitörler için paylaşılan texture (şu an her
-      monitör kendi swap chain'ine aynı shader'ı çiziyor; video gelince
-      tek decode → paylaşılan texture olmalı)
+- [ ] **RAM/thread düşürme.** ~265 MB ve 75 thread, hedefin çok üstünde.
+      Nereye gittiğini ölç: MF source reader thread havuzu mu, decode
+      buffer sayısı mı, iki decoder mı. Denenecekler: async callback yerine
+      sync okuma, `MF_SOURCE_READER_DISABLE_CAMERA_PLUGINS`, buffer sayısını
+      sınırlama.
+- [ ] Görünmeyen adapter için decoder hiç açılmasın (şu an iki adapter için
+      iki decoder açılıyor, biri hep kapalı olsa bile)
 
 ## Sırada (henüz başlanmadı)
 
-- [ ] RAM'i düşürme: ~82 MB private hedefin üstünde, nereye gittiğini ölç
+
 - [ ] `caps` sonucunun cache'lenmesi + `WM_DISPLAYCHANGE` ile invalidation
 - [ ] Monitör takma/çıkarma sırasında yüzeylerin yeniden oluşturulması
 - [ ] wallpaper-core ↔ wallpaper-ui named pipe IPC protokolü taslağı

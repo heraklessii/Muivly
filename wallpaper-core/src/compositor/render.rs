@@ -5,18 +5,24 @@
 //! own device, because sharing a texture across adapters costs a trip through
 //! system memory and that is exactly what this project refuses to do.
 
-use windows::core::PCSTR;
+use std::path::Path;
+use std::time::Duration;
+
+use windows::core::{Interface, PCSTR};
 use windows::Win32::Foundation::{DXGI_STATUS_OCCLUDED, HMODULE};
 use windows::Win32::Graphics::Direct3D::Fxc::{D3DCompile, D3DCOMPILE_OPTIMIZATION_LEVEL3};
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
     D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
 };
+use windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader,
-    ID3D11RenderTargetView, ID3D11Texture2D, ID3D11VertexShader, D3D11_BIND_CONSTANT_BUFFER,
-    D3D11_BUFFER_DESC, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA,
-    D3D11_USAGE_DEFAULT, D3D11_VIEWPORT,
+    ID3D11RenderTargetView, ID3D11SamplerState, ID3D11Texture2D, ID3D11VertexShader,
+    D3D11_BIND_CONSTANT_BUFFER, D3D11_BUFFER_DESC, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_SAMPLER_DESC,
+    D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_USAGE_DEFAULT,
+    D3D11_VIEWPORT,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
@@ -29,14 +35,39 @@ use windows::Win32::Graphics::Dxgi::{
 
 use super::shader::SOURCE;
 use super::window::Surface;
+use crate::decoder::VideoDecoder;
 
 /// Matches the `cbuffer Params` in the shader. Constant buffers are sized in
 /// 16-byte registers, hence the padding.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Params {
     time: f32,
-    _pad: [f32; 3],
+    _pad0: f32,
+    /// Maps screen UV onto the video, cropping the overhanging axis so the
+    /// frame fills the monitor without stretching.
+    uv_scale: [f32; 2],
+    uv_offset: [f32; 2],
+    _pad1: [f32; 2],
+}
+
+impl Params {
+    /// "Cover" fit: scale until both axes are filled, crop the excess. A
+    /// wallpaper with letterbox bars would look broken, so the choice is
+    /// always to lose some edge rather than show background.
+    fn fit(video: (u32, u32), screen: (u32, u32)) -> ([f32; 2], [f32; 2]) {
+        let video_aspect = video.0 as f32 / video.1 as f32;
+        let screen_aspect = screen.0 as f32 / screen.1 as f32;
+
+        if video_aspect > screen_aspect {
+            // Video is wider: show a horizontal slice of it.
+            let scale = screen_aspect / video_aspect;
+            ([scale, 1.0], [(1.0 - scale) / 2.0, 0.0])
+        } else {
+            let scale = video_aspect / screen_aspect;
+            ([1.0, scale], [0.0, (1.0 - scale) / 2.0])
+        }
+    }
 }
 
 /// One monitor: its window, its swap chain, its view.
@@ -58,14 +89,23 @@ pub struct Renderer {
     _device: ID3D11Device,
     context: ID3D11DeviceContext,
     vs: ID3D11VertexShader,
-    ps: ID3D11PixelShader,
+    /// The placeholder gradient, used when there is no video to play.
+    ps_gradient: ID3D11PixelShader,
+    ps_video: ID3D11PixelShader,
+    sampler: ID3D11SamplerState,
     params: ID3D11Buffer,
     targets: Vec<Target>,
+    /// One decoder for this adapter, feeding every monitor attached to it.
+    decoder: Option<VideoDecoder>,
 }
 
 impl Renderer {
     /// Build a renderer for every surface on one adapter.
-    pub fn new(luid: i64, surfaces: Vec<Surface>) -> windows::core::Result<Self> {
+    pub fn new(
+        luid: i64,
+        surfaces: Vec<Surface>,
+        video: Option<&Path>,
+    ) -> windows::core::Result<Self> {
         unsafe {
             let adapter = adapter_by_luid(luid)?;
 
@@ -75,7 +115,10 @@ impl Renderer {
                 &adapter,
                 D3D_DRIVER_TYPE_UNKNOWN,
                 HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                // VIDEO_SUPPORT is what lets Media Foundation put its decoder
+                // on this device. Without it the decode silently lands on the
+                // CPU, which this project does not allow.
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                 Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
                 D3D11_SDK_VERSION,
                 Some(&mut device),
@@ -86,24 +129,49 @@ impl Renderer {
             let device = device.expect("D3D11CreateDevice succeeded without a device");
             let context = context.expect("D3D11CreateDevice succeeded without a context");
 
+            // Media Foundation decodes on its own threads and touches this
+            // device from them. Without multithread protection that is a data
+            // race inside the driver, and it shows up as a hang or a corrupt
+            // frame rather than an error.
+            if let Ok(multithread) = device.cast::<ID3D10Multithread>() {
+                let _ = multithread.SetMultithreadProtected(true);
+            }
+
             let factory: IDXGIFactory2 = CreateDXGIFactory1()?;
             let mut targets = Vec::with_capacity(surfaces.len());
             for surface in surfaces {
                 targets.push(make_target(&device, &factory, surface)?);
             }
 
-            let (vs, ps) = compile_shaders(&device)?;
+            let (vs, ps_gradient, ps_video) = compile_shaders(&device)?;
             let params = make_params_buffer(&device)?;
+            let sampler = make_sampler(&device)?;
+
+            let decoder = match video {
+                Some(path) => Some(VideoDecoder::open(&device, path)?),
+                None => None,
+            };
 
             Ok(Self {
                 _device: device,
                 context,
                 vs,
-                ps,
+                ps_gradient,
+                ps_video,
+                sampler,
                 params,
                 targets,
+                decoder,
             })
         }
+    }
+
+    /// The video's pixel dimensions, if a video is playing.
+    pub fn video_size(&self) -> Option<(u32, u32)> {
+        self.decoder.as_ref().map(|d| {
+            let frame = d.frame();
+            (frame.width, frame.height)
+        })
     }
 
     pub fn monitor_count(&self) -> usize {
@@ -114,39 +182,55 @@ impl Renderer {
     ///
     /// Returns how many were actually drawn. Zero means everything on this
     /// adapter is covered, and the caller can stop spending time here.
-    pub fn draw(&mut self, time: f32) -> windows::core::Result<usize> {
+    pub fn draw(&mut self, elapsed: Duration) -> windows::core::Result<usize> {
         let mut drawn = 0;
+        let time = elapsed.as_secs_f32();
 
-        unsafe {
-            self.context.UpdateSubresource(
-                &self.params,
-                0,
-                None,
-                &Params {
-                    time,
-                    _pad: [0.0; 3],
-                } as *const _ as *const _,
-                0,
-                0,
-            );
-
-            for target in &mut self.targets {
-                // Cheapest check first, and the one that actually fires for
-                // the case users care about: is the foreground window sitting
-                // on top of this monitor?
+        // Work out what is visible *before* decoding. Decoding a frame nobody
+        // will see is the single most expensive thing this program could do
+        // by accident, and it is exactly what the project promises not to.
+        let visible: Vec<bool> = self
+            .targets
+            .iter_mut()
+            .map(|target| {
                 if crate::power::is_covered(&target.monitor) {
-                    continue;
+                    return false;
                 }
 
                 if target.occluded {
                     // A test present asks DXGI whether the window would be
                     // visible, without rendering or flipping anything. This
                     // is the entire cost of a covered monitor.
-                    let status = target.swap_chain.Present(0, DXGI_PRESENT_TEST);
+                    let status = unsafe { target.swap_chain.Present(0, DXGI_PRESENT_TEST) };
                     if status == DXGI_STATUS_OCCLUDED {
-                        continue;
+                        return false;
                     }
                     target.occluded = false;
+                }
+
+                true
+            })
+            .collect();
+
+        if !visible.iter().any(|v| *v) {
+            return Ok(0);
+        }
+
+        // One decode for the whole adapter — every monitor attached to it
+        // samples the same texture. This is the "one decode, shared texture"
+        // rule in practice.
+        let video = match &mut self.decoder {
+            Some(decoder) => {
+                decoder.update(&self.context, elapsed)?;
+                Some(decoder.frame())
+            }
+            None => None,
+        };
+
+        unsafe {
+            for (target, visible) in self.targets.iter_mut().zip(visible) {
+                if !visible {
+                    continue;
                 }
 
                 self.context
@@ -160,12 +244,46 @@ impl Renderer {
                     MaxDepth: 1.0,
                 }]));
 
+                // The fit differs per monitor: the same video on a 16:9 and a
+                // 16:10 screen needs a different crop.
+                let (uv_scale, uv_offset) = match &video {
+                    Some(frame) => {
+                        Params::fit((frame.width, frame.height), (target.width, target.height))
+                    }
+                    None => ([1.0, 1.0], [0.0, 0.0]),
+                };
+                self.context.UpdateSubresource(
+                    &self.params,
+                    0,
+                    None,
+                    &Params {
+                        time,
+                        uv_scale,
+                        uv_offset,
+                        ..Default::default()
+                    } as *const _ as *const _,
+                    0,
+                    0,
+                );
+
                 self.context
                     .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 self.context.VSSetShader(&self.vs, None);
-                self.context.PSSetShader(&self.ps, None);
                 self.context
                     .PSSetConstantBuffers(0, Some(&[Some(self.params.clone())]));
+
+                match &video {
+                    Some(frame) => {
+                        self.context.PSSetShader(&self.ps_video, None);
+                        self.context
+                            .PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+                        self.context.PSSetShaderResources(
+                            0,
+                            Some(&[Some(frame.luma.clone()), Some(frame.chroma.clone())]),
+                        );
+                    }
+                    None => self.context.PSSetShader(&self.ps_gradient, None),
+                }
 
                 // A single triangle large enough to cover the screen. No
                 // vertex buffer: the vertex shader derives the corners from
@@ -262,10 +380,7 @@ unsafe fn make_target(
 
 unsafe fn make_params_buffer(device: &ID3D11Device) -> windows::core::Result<ID3D11Buffer> {
     unsafe {
-        let initial = Params {
-            time: 0.0,
-            _pad: [0.0; 3],
-        };
+        let initial = Params::default();
 
         let desc = D3D11_BUFFER_DESC {
             ByteWidth: std::mem::size_of::<Params>() as u32,
@@ -287,29 +402,56 @@ unsafe fn make_params_buffer(device: &ID3D11Device) -> windows::core::Result<ID3
 
 unsafe fn compile_shaders(
     device: &ID3D11Device,
-) -> windows::core::Result<(ID3D11VertexShader, ID3D11PixelShader)> {
+) -> windows::core::Result<(ID3D11VertexShader, ID3D11PixelShader, ID3D11PixelShader)> {
     unsafe {
         let vs_blob = compile(SOURCE, c"vs_main", c"vs_5_0")?;
-        let ps_blob = compile(SOURCE, c"ps_main", c"ps_5_0")?;
-
         let vs_code = std::slice::from_raw_parts(
             vs_blob.GetBufferPointer() as *const u8,
             vs_blob.GetBufferSize(),
         );
-        let ps_code = std::slice::from_raw_parts(
-            ps_blob.GetBufferPointer() as *const u8,
-            ps_blob.GetBufferSize(),
-        );
 
         let mut vs = None;
         device.CreateVertexShader(vs_code, None, Some(&mut vs))?;
-        let mut ps = None;
-        device.CreatePixelShader(ps_code, None, Some(&mut ps))?;
 
         Ok((
             vs.expect("CreateVertexShader succeeded without a shader"),
-            ps.expect("CreatePixelShader succeeded without a shader"),
+            pixel_shader(device, c"ps_gradient")?,
+            pixel_shader(device, c"ps_video")?,
         ))
+    }
+}
+
+unsafe fn pixel_shader(
+    device: &ID3D11Device,
+    entry: &std::ffi::CStr,
+) -> windows::core::Result<ID3D11PixelShader> {
+    unsafe {
+        let blob = compile(SOURCE, entry, c"ps_5_0")?;
+        let code =
+            std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize());
+
+        let mut ps = None;
+        device.CreatePixelShader(code, None, Some(&mut ps))?;
+        Ok(ps.expect("CreatePixelShader succeeded without a shader"))
+    }
+}
+
+unsafe fn make_sampler(device: &ID3D11Device) -> windows::core::Result<ID3D11SamplerState> {
+    unsafe {
+        let desc = D3D11_SAMPLER_DESC {
+            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+            // Clamp, not wrap: the crop can land a sample fractionally past
+            // the edge, and wrapping would show a strip of the opposite side.
+            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+            MaxLOD: f32::MAX,
+            ..Default::default()
+        };
+
+        let mut sampler = None;
+        device.CreateSamplerState(&desc, Some(&mut sampler))?;
+        Ok(sampler.expect("CreateSamplerState succeeded without a sampler"))
     }
 }
 

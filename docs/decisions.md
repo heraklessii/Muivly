@@ -210,3 +210,33 @@ görünürken yanlışlıkla duruyor.
 
 **Ölçüm:** iki monitör, 30fps — görünürken %3.12 CPU (tek çekirdek),
 tamamen kapalıyken %0.00.
+
+---
+
+## 2026-08-26 — Decode edilen frame örneklenebilir texture'a GPU içi kopyalanır
+
+**Karar:** Media Foundation'ın verdiği decode edilmiş texture doğrudan
+örneklenmez; `CopySubresourceRegion` ile `D3D11_BIND_SHADER_RESOURCE` bind'li
+kendi NV12 texture'ımıza kopyalanır ve shader onu örnekler.
+
+**Gerekçe:** Decoder çıktısı `D3D11_BIND_DECODER` ile oluşturuluyor ve
+genelde `SHADER_RESOURCE` bind'i yok — SRV oluşturulamıyor. Kopya GPU
+içinde kalıyor; frame hiçbir noktada sistem belleğine inmiyor, yani
+zero-copy kuralı korunuyor. "Zero-copy" burada "CPU'ya round-trip yok"
+demek, "hiç kopya yok" değil.
+
+**Alternatif (elendi):** `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING`
+ile BGRA çıktı istemek. Shader basitleşirdi ama araya bir video processor
+girip fazladan GPU işi ve bellek getiriyor.
+
+---
+
+## 2026-08-26 — Görünürlük decode'dan ÖNCE hesaplanır
+
+**Karar:** `Renderer::draw` önce hangi monitörlerin görünür olduğunu
+belirler; hiçbiri görünmüyorsa decoder hiç çağrılmaz.
+
+**Gerekçe:** İlk implementasyonda decode, occlusion kontrolünden önce
+yapılıyordu — monitör tamamen kapalıyken bile her frame çözülüyordu. Bu,
+projenin en temel vaadinin ("görünmüyorsa iş yok") sessizce ihlaliydi.
+Ölçüm farkı: kapalıyken %13.65 → %0.39 CPU.

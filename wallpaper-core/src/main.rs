@@ -7,6 +7,8 @@ mod decoder;
 mod ipc;
 mod power;
 
+use std::path::PathBuf;
+
 use windows::core::BOOL;
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
 use windows::Win32::UI::HiDpi::{
@@ -17,10 +19,13 @@ const HELP: &str = "\
 Muivly wallpaper engine
 
 USAGE:
-    muivly-core [OPTIONS]
+    muivly-core [OPTIONS] [VIDEO]
+
+ARGS:
+    <VIDEO>      Video file to play as the wallpaper. Without one, a
+                 placeholder gradient is shown.
 
 OPTIONS:
-    --run        Render a wallpaper on every monitor until stopped.
     --caps       Print the detected hardware profile and exit.
                  Paste this into a bug report.
     --diag       Dump the desktop window tree (Progman/WorkerW layout).
@@ -36,38 +41,51 @@ fn main() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
-    match std::env::args().nth(1).as_deref() {
+    let arg = std::env::args().nth(1);
+    match arg.as_deref() {
         Some("--caps") => print!("{}", caps::probe().summary()),
         Some("--diag") => compositor::dump_window_tree(),
         Some("-V" | "--version") => println!("muivly-core {}", env!("CARGO_PKG_VERSION")),
         Some("-h" | "--help") => print!("{HELP}"),
-        // Until there is a settings UI to drive it, running with no arguments
-        // does what a user would expect from a wallpaper engine.
-        Some("--run") | None => run(),
-        Some(arg) => {
-            eprintln!("unknown option: {arg}\n\n{HELP}");
+        Some(other) if other.starts_with('-') => {
+            eprintln!("unknown option: {other}\n\n{HELP}");
             std::process::exit(2);
         }
+        // Until there is a settings UI to drive it, a path on the command
+        // line is how a wallpaper gets chosen.
+        Some(path) => run(Some(PathBuf::from(path))),
+        None => run(None),
     }
 }
 
-fn run() {
+fn run(video: Option<PathBuf>) {
+    if let Some(path) = &video {
+        if !path.is_file() {
+            eprintln!("no such file: {}", path.display());
+            std::process::exit(2);
+        }
+    }
+
     let profile = caps::probe();
     print!("{}", profile.summary());
 
-    if profile.rec.tier == caps::Tier::Unsupported {
+    // The rule is no CPU decode, ever. Saying so out loud is better than
+    // silently showing nothing, and far better than quietly burning a core.
+    let playable = profile.rec.tier != caps::Tier::Unsupported;
+    if video.is_some() && !playable {
         eprintln!(
-            "\nthis machine cannot play video wallpapers: {}",
+            "\ncannot play video on this machine: {}",
             profile.rec.reason
         );
-        eprintln!("rendering anyway — the placeholder wallpaper needs no decoder");
+        eprintln!("showing the placeholder wallpaper instead");
     }
 
     unsafe {
         let _ = SetConsoleCtrlHandler(Some(ctrl_handler), true);
     }
 
-    if let Err(e) = compositor::run(&profile) {
+    let path = video.filter(|_| playable);
+    if let Err(e) = compositor::run(&profile, path.as_deref()) {
         eprintln!("compositor failed: {e}");
         std::process::exit(1);
     }

@@ -101,3 +101,28 @@ mimari etkisi olan veya sonraki session'ın bilmesi gereken şeyler.
   set / ~82 MB private. RAM hedefin (düşük onlarca MB) üstünde; iki ayrı
   D3D11 cihazı (adapter başına bir tane) bunun bir kısmını açıklıyor.
 - Test sayısı 17. CI kapısı (fmt/clippy/test) temiz.
+
+## 2026-08-26 — Video oynuyor: Media Foundation + D3D11VA
+
+- `decoder/` yazıldı: `IMFSourceReader` + `IMFDXGIDeviceManager`, NV12
+  çıktı, `IMFDXGIBuffer` üzerinden decode edilmiş texture alınıyor.
+  Shader NV12'yi iki plane (R8 luma + R8G8 chroma) olarak örnekleyip
+  BT.709 limited range ile RGB'ye çeviriyor.
+- Zero-copy korunuyor: tek hareket `CopySubresourceRegion` — decoder
+  çıktısı `D3D11_BIND_DECODER` ile geliyor ve örneklenemiyor, o yüzden
+  `SHADER_RESOURCE` bind'li kendi texture'ımıza GPU içi blit yapılıyor.
+  Frame hiçbir noktada sistem belleğine inmiyor.
+- Cihaz oluşturmaya `D3D11_CREATE_DEVICE_VIDEO_SUPPORT` ve
+  `ID3D10Multithread::SetMultithreadProtected` eklendi. İkincisi şart:
+  MF kendi thread'lerinden bu device'a dokunuyor.
+- Aspect: "cover" fit (kırp, çubuk gösterme). Monitör başına ayrı hesap —
+  aynı video 16:9 ve 16:10 ekranda farklı kırpılıyor.
+- **Kendi kuralımızı ihlal eden hata bulundu ve düzeltildi:** ilk hâlde
+  `draw()` occlusion kontrolünden ÖNCE decode ediyordu, yani monitör
+  kapalıyken bile frame çözülüyordu. Artık görünürlük önce hesaplanıyor;
+  hiçbir monitör görünmüyorsa decode hiç çağrılmıyor.
+- **Ölçüm (2 monitör, 2 decoder, 1080p30):** masaüstü görünürken %13.65
+  CPU (tek çekirdek), tamamen kapalıyken **%0.39**.
+- **Zayıf nokta: RAM ~265 MB ve 75 thread.** Hedefin çok üstünde.
+  Büyük kısmı MF source reader'ın thread havuzu ve decode buffer'ları;
+  bu makinede iki decoder çalıştığı için en kötü durum. Sıradaki iş bu.
