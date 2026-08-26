@@ -11,22 +11,22 @@ project_overview.md bölümüne referans.
 
 ## Şimdi (aktif faz)
 
-- [ ] WorkerW injection + shared D3D11 texture prototipi. (bkz.
-      decisions.md → "Multi-monitor: paylaşılan texture")
-- [ ] Cross-adapter yolu: İlker'in makinesi tam da bu durum (iGPU + dGPU'da
-      birer monitör), prototip bunu ilk günden test edebilir.
+- [ ] Media Foundation decoder iskeleti (`IMFSourceReader` + D3D11VA wrapper)
+      — artık ekrana çizecek yer var, sıradaki büyük parça bu
+- [ ] Aynı adapter'daki monitörler için paylaşılan texture (şu an her
+      monitör kendi swap chain'ine aynı shader'ı çiziyor; video gelince
+      tek decode → paylaşılan texture olmalı)
 
 ## Sırada (henüz başlanmadı)
 
-- [ ] Media Foundation decoder iskeleti (`IMFSourceReader` + D3D11VA wrapper)
-- [ ] Fullscreen/occlusion detection (`SetWinEventHook`, `DwmGetWindowAttribute`)
+- [ ] RAM'i düşürme: ~82 MB private hedefin üstünde, nereye gittiğini ölç
 - [ ] `caps` sonucunun cache'lenmesi + `WM_DISPLAYCHANGE` ile invalidation
-      (tasarımda var, henüz kodda yok)
+- [ ] Monitör takma/çıkarma sırasında yüzeylerin yeniden oluşturulması
 - [ ] wallpaper-core ↔ wallpaper-ui named pipe IPC protokolü taslağı
 - [ ] Tauri UI iskeleti: wallpaper seçici, monitör eşleme ekranı
       (tema: `docs/design_system.md`, Outfit fontu Muita'dan kopyalanacak)
-- [ ] WE ile RAM/CPU karşılaştırma benchmark videosu/görseli (pazarlama)
 - [ ] Installer (`Muivly-x.y.z-setup.exe`) — Tauri UI çıkınca release.yml'e ikinci job
+- [ ] WE ile RAM/CPU karşılaştırma benchmark videosu/görseli (pazarlama)
 
 ## Backlog (öncelik yok, fikir aşaması)
 

@@ -171,3 +171,42 @@ tek tek izin istemeye gerek kalmıyor) ve MIT'te olmayan patent koruması var.
 
 **Not:** İlker telif sahibi olduğu için kendi kodunu istediği lisansla ayrıca
 dağıtabilir; bu lisans dışarıdan gelen katkılar için önemli.
+
+---
+
+## 2026-08-26 — WorkerW: önce Progman'ın çocuğuna bak, sonra kardeşe
+
+**Karar:** Wallpaper katmanı şu sırayla aranır: (1) Progman'ın `WorkerW`
+çocuğu, (2) klasik "SHELLDLL_DefView sahibinin arkasındaki üst seviye
+WorkerW", (3) Progman'ın kendisi. Seçilen aday **masaüstü boyutuna karşı
+doğrulanır** (görünür + en az 640x480).
+
+**Gerekçe:** Windows 11'de (bu makinede ölçüldü) görünür WorkerW,
+Progman'ın çocuğu. Klasik algoritma burada görünmez 166x47 stub'lardan
+birini buluyor ve hata **sessiz**: pencere oluşuyor, render başarılı
+dönüyor, ekranda hiçbir şey çıkmıyor. Doğrulama adımı bu sessiz hatayı
+gürültülü hâle getiriyor.
+
+**Not:** `muivly-core --diag` masaüstü pencere ağacını döküyor. Bir kullanıcı
+"wallpaper görünmüyor" derse ilk istenecek şey bu.
+
+---
+
+## 2026-08-26 — Occlusion: tüm pencereleri tara, foreground yetmez
+
+**Karar:** Bir monitörün kapalı olup olmadığı, tüm üst seviye pencereler
+taranarak belirlenir (250ms cache). Minimize ve **cloaked** pencereler
+elenir. DXGI'ın `DXGI_STATUS_OCCLUDED` cevabı ikincil sinyal olarak kalır.
+
+**Gerekçe:** İki alternatif de tek başına yetersiz kaldı:
+- `DXGI_STATUS_OCCLUDED` wallpaper child pencereleri için güvenilir
+  tetiklenmiyor.
+- `GetForegroundWindow` tek pencere döndürüyor; çoklu monitörde ikinci
+  ekranı kaplayan pencere foreground değilse o monitör boşa render ediyor.
+
+**Cloaked kontrolü şart:** askıya alınmış UWP pencereleri
+`IsWindowVisible=true` ve tam ekran rect ile geliyor; elenmezlerse wallpaper
+görünürken yanlışlıkla duruyor.
+
+**Ölçüm:** iki monitör, 30fps — görünürken %3.12 CPU (tek çekirdek),
+tamamen kapalıyken %0.00.

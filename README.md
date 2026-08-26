@@ -5,10 +5,10 @@ A native live wallpaper engine for Windows, built for machines that struggle wit
 [![CI](https://github.com/heraklessii/Muivly/actions/workflows/ci.yml/badge.svg)](https://github.com/heraklessii/Muivly/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-> **Status: early development.** Muivly does not display wallpapers yet. The
-> hardware detection layer works and is the only thing you can run today. There
-> is no release to download. Star or watch the repo if you want to know when
-> there is.
+> **Status: early development.** Muivly renders a placeholder wallpaper on
+> every monitor and stops rendering when nothing is visible. It cannot play
+> video yet — the decoder is the next piece. There is no release to download.
+> Star or watch the repo if you want to know when there is.
 
 ## Why
 
@@ -50,8 +50,8 @@ essentially anything from 2014 onward, including integrated graphics.
 
 ## Check your hardware
 
-The one thing that works today. It reports what Muivly detected about your
-machine and what settings it would pick:
+Reports what Muivly detected about your machine and what settings it would
+pick:
 
 ```bash
 muivly-core --caps
@@ -113,9 +113,10 @@ Design notes and the reasoning behind each choice live in [`docs/`](docs/) —
 ## Roadmap
 
 - [x] Hardware capability detection
-- [ ] WorkerW injection and shared D3D11 texture
+- [x] WorkerW injection, one D3D11 device per adapter, per-monitor surfaces
+- [x] Occlusion detection — rendering stops when nothing is visible
 - [ ] Media Foundation decoder
-- [ ] Fullscreen / occlusion detection
+- [ ] Shared texture across monitors on one adapter
 - [ ] Settings UI
 - [ ] First release
 - [ ] Measured RAM/CPU comparison against the alternatives
@@ -135,8 +136,3 @@ else.
 ## License
 
 [Apache-2.0](LICENSE).
-
-## Related
-
-Other things I build under the Mui name: [Muita](https://github.com/heraklessii/Muita)
-(webtoon translation editor), [Muitoon](https://github.com/heraklessii/Muitoon).

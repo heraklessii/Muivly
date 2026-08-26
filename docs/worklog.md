@@ -73,3 +73,31 @@ mimari etkisi olan veya sonraki session'ın bilmesi gereken şeyler.
   tier kararları). Hepsi geçiyor, clippy temiz.
 - CLAUDE.md'ye "Açık Kaynak" bölümü eklendi: dışa dönük dil İngilizce, CI
   yeşil olmadan iş bitmez, telemetri yok, semver.
+
+## 2026-08-26 — Compositor çalışıyor: masaüstünde gerçek render
+
+- `compositor/` yazıldı: `workerw.rs` (wallpaper katmanını bulma),
+  `window.rs` (monitör başına child pencere), `render.rs` (adapter başına
+  D3D11 cihazı + monitör başına swap chain), `shader.rs` (geçici gradient),
+  `diag.rs` (masaüstü pencere ağacı dökümü).
+- `power/` yazıldı: monitör kapalı mı kontrolü.
+- **Windows 11'de WorkerW düzeni farklı çıktı.** Klasik algoritma
+  ("SHELLDLL_DefView sahibinin kardeşi olan üst seviye WorkerW") bu makinede
+  görünmez 166x47 stub'lardan birini buluyordu — pencere oluşuyor, render
+  başarılı dönüyor, ekranda hiçbir şey görünmüyor. Sessiz hata.
+  Gerçek düzen: WorkerW, **Progman'ın çocuğu** (4480x1440, görünür).
+  Çözüm: önce Progman'ın WorkerW çocuğuna bak, sonra klasik kardeş araması,
+  ve seçilen adayı masaüstü boyutuna karşı doğrula. `--diag` bu ağacı
+  dökmek için eklendi — bir daha tahmin etmeye gerek kalmasın.
+- **Occlusion'da iki aşama gerekti.** DXGI'ın `DXGI_STATUS_OCCLUDED` cevabı
+  wallpaper child pencereleri için güvenilir tetiklenmiyor. `GetForegroundWindow`
+  tek başına da yetmedi: çoklu monitörde ikinci ekranı kaplayan pencere
+  foreground değilse görülmüyor, o monitör boşa render etmeye devam ediyor.
+  Nihai çözüm: tüm üst seviye pencereleri tara (250ms cache ile), minimize/
+  cloaked olanları ele. **Cloaked kontrolü şart** — askıya alınmış UWP
+  pencereleri `IsWindowVisible=true` ve tam ekran rect ile geliyor.
+- **Ölçüm (bu makine, iki monitör, 30fps):** masaüstü görünürken %3.12 CPU
+  (tek çekirdek), her iki monitör kapalıyken **%0.00**, RAM ~64 MB working
+  set / ~82 MB private. RAM hedefin (düşük onlarca MB) üstünde; iki ayrı
+  D3D11 cihazı (adapter başına bir tane) bunun bir kısmını açıklıyor.
+- Test sayısı 17. CI kapısı (fmt/clippy/test) temiz.

@@ -35,6 +35,10 @@ pub enum AdapterClass {
 #[derive(Debug, Clone)]
 pub struct MonitorInfo {
     pub device_name: String,
+    /// Top-left in virtual-desktop coordinates. Can be negative: a monitor
+    /// placed to the left of the primary one starts at a negative x.
+    pub x: i32,
+    pub y: i32,
     pub width: u32,
     pub height: u32,
     pub refresh_hz: u32,
@@ -189,6 +193,8 @@ unsafe fn outputs_of(adapter: &IDXGIAdapter1) -> Vec<MonitorInfo> {
             device_name: String::from_utf16_lossy(&desc.DeviceName)
                 .trim_end_matches('\0')
                 .to_string(),
+            x: rect.left,
+            y: rect.top,
             width: if ok {
                 devmode.dmPelsWidth
             } else {

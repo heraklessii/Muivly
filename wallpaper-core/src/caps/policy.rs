@@ -122,7 +122,9 @@ mod tests {
 
     fn monitor(width: u32, height: u32, refresh_hz: u32) -> MonitorInfo {
         MonitorInfo {
-            device_name: r"\\.\DISPLAY1".to_string(),
+            device_name: r"\.DISPLAY1".to_string(),
+            x: 0,
+            y: 0,
             width,
             height,
             refresh_hz,
