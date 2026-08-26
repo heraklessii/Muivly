@@ -93,7 +93,7 @@ fn run(video: Option<PathBuf>) {
     println!("ipc: listening on {}", ipc::PIPE_NAME);
 
     let path = video.filter(|_| playable);
-    if let Err(e) = compositor::run(&profile, path.as_deref(), rx, status) {
+    if let Err(e) = compositor::run(&profile, path, rx, status) {
         eprintln!("compositor failed: {e}");
         std::process::exit(1);
     }

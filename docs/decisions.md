@@ -277,3 +277,33 @@ kapatmak, sonra tekrar açmak için Başlat menüsüne gitmek gerektirirdi.
 **Not:** Tepsi menüsündeki "Çıkış" yalnız UI'ı kapatıyor. Motoru durdurmak
 ayrı bir eylem (`quit` komutu) — kullanıcı ayar panelini kapattı diye
 duvar kağıdı kaybolmamalı.
+
+---
+
+## 2026-08-26 — Decoder'lar dosya yoluna göre anahtarlanır
+
+**Karar:** `Renderer` decoder'ları `HashMap<PathBuf, VideoDecoder>` içinde
+tutuyor. Bir monitöre video atanınca, o yol için decoder yoksa açılıyor;
+kimse kullanmıyorsa düşürülüyor.
+
+**Gerekçe:** "Aynı video birden fazla ekranda oynuyorsa decode tek sefer"
+kuralı böylece kendiliğinden sağlanıyor — ayrı bir paylaşım mantığı yok,
+aynı anahtar aynı decoder demek. Farklı videolar zaten farklı decode
+gerektiriyor; bu da tier politikasının `allow_distinct_videos` ile
+sınırladığı şey.
+
+---
+
+## 2026-08-26 — Kitaplık şeması frontend'in, Rust'ın değil
+
+**Karar:** `%APPDATA%\Muivly\state.json` Rust tarafında tipsiz bir JSON blob.
+Rust yalnız (1) BOM kırpıyor, (2) geçerli JSON mu diye bakıyor, (3) atomik
+yazıyor (geçici dosya + rename).
+
+**Gerekçe:** Bu dosyada motorun ihtiyaç duyduğu hiçbir şey yok — motora
+duvar kağıtları pipe üzerinden söyleniyor. Şemayı Rust'ta da tanımlamak, her
+UI alanı eklendiğinde eşlik eden bir Rust değişikliği demekti.
+
+**Bozuk dosya:** Üstüne yazılmıyor. `state.corrupt-<zaman>.json` olarak kenara
+alınıp UI boştan başlıyor. Aksi hâlde parse hatası → boş kitaplık → ilk kayıt
+iyi dosyayı siliyordu; bu gerçekten yaşandı (BOM'lu bir dosyayla).

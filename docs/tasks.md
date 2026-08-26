@@ -11,8 +11,6 @@ project_overview.md bölümüne referans.
 
 ## Şimdi (aktif faz)
 
-- [ ] Monitör başına ayrı duvar kağıdı ataması (UI listesi hazır, motor tarafı
-      tek video destekliyor)
 - [ ] **RAM/thread düşürme.** ~265 MB ve 75 thread, hedefin çok üstünde.
       Nereye gittiğini ölç: MF source reader thread havuzu mu, decode
       buffer sayısı mı, iki decoder mı. Denenecekler: async callback yerine
@@ -22,6 +20,10 @@ project_overview.md bölümüne referans.
       iki decoder açılıyor, biri hep kapalı olsa bile)
 
 ## Sırada (henüz başlanmadı)
+
+- [ ] Kitaplık büyüyünce ızgarayı sanallaştır — şu an her karo bir `<video>`
+      elemanı tutuyor, elli üstü öğede tarayıcı çözücü sınırına takılır
+- [ ] Kayıp dosya işareti: `file_exists` komutu var ama UI kullanmıyor
 
 - [ ] `caps` sonucunun cache'lenmesi + `WM_DISPLAYCHANGE` ile invalidation
 - [ ] Monitör takma/çıkarma sırasında yüzeylerin yeniden oluşturulması

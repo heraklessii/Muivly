@@ -59,6 +59,8 @@ pub struct VideoDecoder {
     pending: Option<(i64, ID3D11Texture2D, u32)>,
     /// Playback position of the current loop, in 100ns units.
     origin: i64,
+    /// How many times the clip has restarted. A playlist advances on this.
+    loops: u32,
     finished: bool,
 }
 
@@ -123,9 +125,15 @@ impl VideoDecoder {
                 height,
                 pending: None,
                 origin: 0,
+                loops: 0,
                 finished: false,
             })
         }
+    }
+
+    /// How many times the clip has played through.
+    pub fn loops(&self) -> u32 {
+        self.loops
     }
 
     pub fn frame(&self) -> Frame {
@@ -251,6 +259,7 @@ impl VideoDecoder {
         // Restart the clock, so the next frame is due immediately rather than
         // the decoder trying to catch up to wall time it can never reach.
         self.origin = (elapsed.as_nanos() / 100) as i64;
+        self.loops = self.loops.saturating_add(1);
         Ok(())
     }
 }

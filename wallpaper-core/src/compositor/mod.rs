@@ -6,7 +6,8 @@ mod shader;
 mod window;
 mod workerw;
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -19,23 +20,44 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::caps::GpuProfile;
-use crate::ipc::{Command, Status};
+use crate::ipc::{Command, MonitorState, Status};
 use render::Renderer;
 use window::Surface;
 
-static RUNNING: AtomicBool = AtomicBool::new(true);
-
 pub use diag::dump as dump_window_tree;
+pub use render::Fit;
+
+static RUNNING: AtomicBool = AtomicBool::new(true);
 
 /// Ask the render loop to finish the current frame and return.
 pub fn stop() {
     RUNNING.store(false, Ordering::Relaxed);
 }
 
+/// What one monitor is playing, and where it is in a playlist.
+struct Playback {
+    /// Empty means the placeholder gradient. One entry is a fixed wallpaper.
+    /// More than one is a playlist.
+    items: Vec<PathBuf>,
+    index: usize,
+    enabled: bool,
+    /// When the current item started, for interval-based advancing.
+    started: Instant,
+    /// The decoder's loop count when the current item started, for
+    /// advance-when-the-clip-ends.
+    loops_at_start: u32,
+}
+
+impl Playback {
+    fn current(&self) -> Option<&PathBuf> {
+        self.items.get(self.index)
+    }
+}
+
 /// Create a surface for every monitor and render until stopped.
 pub fn run(
     profile: &GpuProfile,
-    video: Option<&Path>,
+    initial: Option<PathBuf>,
     commands: Receiver<Command>,
     status: Arc<Mutex<Status>>,
 ) -> windows::core::Result<()> {
@@ -59,32 +81,44 @@ pub fn run(
             surfaces.push(Surface::create(parent, monitor)?);
         }
 
-        let renderer = Renderer::new(adapter.luid, surfaces, video)?;
-        match renderer.video_size() {
-            Some((w, h)) => println!(
-                "surface: {} monitor(s) on {} — decoding {w}x{h}",
-                renderer.monitor_count(),
-                adapter.name
-            ),
-            None => println!(
-                "surface: {} monitor(s) on {}",
-                renderer.monitor_count(),
-                adapter.name
-            ),
-        }
+        let renderer = Renderer::new(adapter.luid, surfaces)?;
+        println!(
+            "surface: {} monitor(s) on {}",
+            renderer.monitor_count(),
+            adapter.name
+        );
         renderers.push(renderer);
+    }
+
+    let mut playback: HashMap<String, Playback> = HashMap::new();
+    for adapter in &profile.adapters {
+        for monitor in &adapter.outputs {
+            playback.insert(
+                monitor.device_name.clone(),
+                Playback {
+                    items: initial.iter().cloned().collect(),
+                    index: 0,
+                    enabled: true,
+                    started: Instant::now(),
+                    loops_at_start: 0,
+                },
+            );
+        }
+    }
+
+    // Apply whatever the command line asked for.
+    for (name, state) in &playback {
+        apply(&mut renderers, name, state.current())?;
     }
 
     let mut fps = profile.rec.target_fps.max(1);
     let mut frame_time = Duration::from_secs_f64(1.0 / fps as f64);
-    let mut current_video = video.map(|p| p.to_path_buf());
-    println!("rendering at {fps} fps — Ctrl+C to stop");
+    let mut fit = Fit::default();
+    // Zero means "advance when the clip ends" rather than on a clock.
+    let mut interval_secs = 0u64;
 
-    {
-        let mut status = status.lock().expect("status mutex poisoned");
-        status.fps = fps;
-        status.video = current_video.clone();
-    }
+    println!("rendering at {fps} fps — Ctrl+C to stop");
+    publish(&status, fps, fit, interval_secs, false, &playback);
 
     // How often to check whether a covered desktop has become visible again.
     // Half a second is imperceptible to a user alt-tabbing out of a game, and
@@ -102,33 +136,97 @@ pub fn run(
         // Apply whatever the UI asked for since the last frame. Draining
         // rather than handling one keeps a burst of clicks from taking a
         // frame each.
+        let mut changed = false;
         for command in commands.try_iter() {
+            changed = true;
             match command {
-                Command::SetVideo(path) => {
-                    for renderer in &mut renderers {
-                        renderer.set_video(Some(&path))?;
+                Command::SetPlaylist { monitor, items } => {
+                    let entry = playback.entry(monitor.clone()).or_insert_with(|| Playback {
+                        items: Vec::new(),
+                        index: 0,
+                        enabled: true,
+                        started: Instant::now(),
+                        loops_at_start: 0,
+                    });
+                    entry.items = items;
+                    entry.index = 0;
+                    entry.started = Instant::now();
+                    entry.loops_at_start = 0;
+
+                    let current = entry.current().cloned();
+                    match &current {
+                        Some(path) => println!("{monitor}: {}", path.display()),
+                        None => println!("{monitor}: cleared"),
                     }
-                    println!("wallpaper: {}", path.display());
-                    current_video = Some(path);
+                    apply(&mut renderers, &monitor, current.as_ref())?;
                 }
-                Command::Clear => {
-                    for renderer in &mut renderers {
-                        renderer.set_video(None)?;
+
+                Command::SetEnabled { monitor, enabled } => {
+                    if let Some(entry) = playback.get_mut(&monitor) {
+                        entry.enabled = enabled;
                     }
-                    println!("wallpaper: cleared");
-                    current_video = None;
+                    for renderer in &mut renderers {
+                        if renderer.has_monitor(&monitor) {
+                            renderer.set_enabled(&monitor, enabled)?;
+                        }
+                    }
+                    println!("{monitor}: {}", if enabled { "on" } else { "off" });
                 }
+
+                Command::Next { monitor } => {
+                    advance(&mut renderers, &mut playback, &monitor)?;
+                }
+
                 Command::Fps(n) => {
                     fps = n;
                     frame_time = Duration::from_secs_f64(1.0 / n as f64);
                     println!("fps: {n}");
                 }
+
+                Command::SetFit(next) => {
+                    fit = next;
+                    for renderer in &mut renderers {
+                        renderer.set_fit(fit);
+                    }
+                    println!("fit: {}", fit.name());
+                }
+
+                Command::Interval(secs) => {
+                    interval_secs = secs;
+                    println!("interval: {secs}s");
+                }
+
                 Command::Quit => stop(),
             }
+        }
 
-            let mut status = status.lock().expect("status mutex poisoned");
-            status.fps = fps;
-            status.video = current_video.clone();
+        // Playlists advance either on a clock or when the clip ends. Both are
+        // checked here rather than in the renderer, which has no idea what a
+        // playlist is.
+        let loops: HashMap<PathBuf, u32> = renderers
+            .iter()
+            .flat_map(|r| r.loop_counts())
+            .collect::<HashMap<_, _>>();
+
+        let due: Vec<String> = playback
+            .iter()
+            .filter(|(_, state)| state.enabled && state.items.len() > 1)
+            .filter(|(_, state)| {
+                if interval_secs > 0 {
+                    state.started.elapsed().as_secs() >= interval_secs
+                } else {
+                    state
+                        .current()
+                        .and_then(|path| loops.get(path))
+                        .is_some_and(|count| *count > state.loops_at_start)
+                }
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        for monitor in due {
+            advance(&mut renderers, &mut playback, &monitor)?;
+            changed = true;
         }
 
         let elapsed = start.elapsed();
@@ -151,7 +249,11 @@ pub fn run(
                 }
             );
             was_paused = paused;
-            status.lock().expect("status mutex poisoned").paused = paused;
+            changed = true;
+        }
+
+        if changed {
+            publish(&status, fps, fit, interval_secs, paused, &playback);
         }
 
         // Sleeping the remainder is what keeps this cheap. A wallpaper that
@@ -169,6 +271,82 @@ pub fn run(
     restore_desktop();
 
     Ok(())
+}
+
+/// Move one monitor to the next item in its playlist.
+fn advance(
+    renderers: &mut [Renderer],
+    playback: &mut HashMap<String, Playback>,
+    monitor: &str,
+) -> windows::core::Result<()> {
+    let Some(state) = playback.get_mut(monitor) else {
+        return Ok(());
+    };
+    if state.items.is_empty() {
+        return Ok(());
+    }
+
+    state.index = (state.index + 1) % state.items.len();
+    state.started = Instant::now();
+
+    let current = state.current().cloned();
+    // The next clip may already be open on another monitor, in which case it
+    // has looped a few times already; its count is the baseline, not zero.
+    state.loops_at_start = current
+        .as_ref()
+        .and_then(|path| {
+            renderers
+                .iter()
+                .flat_map(|r| r.loop_counts())
+                .find(|(open, _)| open == path)
+                .map(|(_, count)| count)
+        })
+        .unwrap_or(0);
+
+    apply(renderers, monitor, current.as_ref())
+}
+
+/// Route a monitor's wallpaper to whichever adapter drives it.
+fn apply(
+    renderers: &mut [Renderer],
+    monitor: &str,
+    video: Option<&PathBuf>,
+) -> windows::core::Result<()> {
+    for renderer in renderers.iter_mut() {
+        if renderer.has_monitor(monitor) {
+            renderer.set_video(monitor, video.map(|p| p.as_path()))?;
+        }
+    }
+    Ok(())
+}
+
+fn publish(
+    status: &Arc<Mutex<Status>>,
+    fps: u32,
+    fit: Fit,
+    interval_secs: u64,
+    paused: bool,
+    playback: &HashMap<String, Playback>,
+) {
+    let mut status = status.lock().expect("status mutex poisoned");
+    status.fps = fps;
+    status.fit = fit.name().to_string();
+    status.interval_secs = interval_secs;
+    status.paused = paused;
+    status.monitors = playback
+        .iter()
+        .map(|(name, state)| MonitorState {
+            device_name: name.clone(),
+            enabled: state.enabled,
+            index: state.index,
+            items: state.items.clone(),
+        })
+        .collect();
+    // A map has no order; the UI shows these as a list and a list that
+    // reshuffles itself between polls is unusable.
+    status
+        .monitors
+        .sort_by(|a, b| a.device_name.cmp(&b.device_name));
 }
 
 fn pump_messages() {

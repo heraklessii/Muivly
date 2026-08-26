@@ -7,9 +7,10 @@ A native live wallpaper engine for Windows, built for machines that struggle wit
 
 > **Status: early development.** Muivly plays a video wallpaper on every
 > monitor, decoded on the GPU, stops decoding entirely when nothing is
-> visible, and has a settings window that lives in the system tray. Memory
-> use is still well above where it needs to be. There is no release to
-> download yet — star or watch the repo if you want to know when there is.
+> visible, and has a settings window — a library, playlists, and a different
+> wallpaper per monitor — that lives in the system tray. Memory use is still
+> well above where it needs to be. There is no release to download yet — star
+> or watch the repo if you want to know when there is.
 
 ## Why
 
@@ -154,7 +155,8 @@ Design notes and the reasoning behind each choice live in [`docs/`](docs/) —
 - [x] Media Foundation decoder — hardware H.264/HEVC/VP9/AV1, zero-copy
 - [ ] Bring memory down (currently ~265 MB with video; too high)
 - [x] Settings UI — Tauri v2, closes to the system tray
-- [ ] Per-monitor wallpaper assignment
+- [x] Per-monitor wallpaper assignment
+- [x] Local library and playlists
 - [ ] First release
 - [ ] Measured RAM/CPU comparison against the alternatives
 

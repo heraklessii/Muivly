@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, EnumWindows, GetClassNameW, GetWindowRect, IsWindowVisible,
+    EnumChildWindows, EnumWindows, GetClassNameW, GetParent, GetWindowRect, IsWindowVisible,
 };
 
 static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -41,10 +41,13 @@ fn describe(hwnd: HWND, indent: &str) -> String {
     let _ = unsafe { GetWindowRect(hwnd, &mut rect) };
     let visible = unsafe { IsWindowVisible(hwnd) }.as_bool();
 
+    let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+
     format!(
-        "{indent}{:>10} {:<20} visible={} rect=({},{})-({},{})",
+        "{indent}{:>10} {:<20} parent={:<10} visible={} rect=({},{})-({},{})",
         format!("{:#x}", hwnd.0 as isize),
         class_of(hwnd),
+        format!("{:#x}", parent.0 as isize),
         visible,
         rect.left,
         rect.top,

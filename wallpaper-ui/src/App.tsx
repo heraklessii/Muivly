@@ -1,57 +1,74 @@
-import { useCallback, useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
-import { open } from '@tauri-apps/plugin-dialog'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
-type Status = {
-  fps: number
-  paused: boolean
-  video: string | null
-}
+import { engine, type EngineStatus, type Monitor } from './api'
+import {
+  emptyStore,
+  loadStore,
+  resolve,
+  saveStore,
+  type Assignment,
+  type Store,
+} from './store'
+import Library from './views/Library'
+import Monitors from './views/Monitors'
+import Playlists from './views/Playlists'
+import Settings from './views/Settings'
 
-type Monitor = {
-  name: string
-  x: number
-  y: number
-  width: number
-  height: number
-  refresh_hz: number
-  primary: boolean
-  adapter: string
-}
+type View = 'library' | 'playlists' | 'monitors' | 'settings'
+
+const NAV: { id: View; label: string }[] = [
+  { id: 'library', label: 'Kitaplık' },
+  { id: 'playlists', label: 'Listeler' },
+  { id: 'monitors', label: 'Ekranlar' },
+  { id: 'settings', label: 'Ayarlar' },
+]
 
 /** How often to ask the engine how it is doing. */
 const POLL_MS = 1500
 
 export default function App() {
-  const [status, setStatus] = useState<Status | null>(null)
+  const [view, setView] = useState<View>('library')
+  const [store, setStore] = useState<Store>(emptyStore)
+  const [loaded, setLoaded] = useState(false)
+  const [status, setStatus] = useState<EngineStatus | null>(null)
   const [monitors, setMonitors] = useState<Monitor[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [starting, setStarting] = useState(false)
 
-  // `fps` is edited locally while dragging so the slider does not fight the
-  // poll, and only sent to the engine on release.
-  const [fpsDraft, setFpsDraft] = useState<number | null>(null)
+  useEffect(() => {
+    void loadStore().then((next) => {
+      setStore(next)
+      setLoaded(true)
+    })
+  }, [])
+
+  // Kept in a ref as well as state so `refresh` can read it without being
+  // rebuilt on every change, which would restart the poll timer.
+  const monitorsRef = useRef<Monitor[]>([])
 
   const refresh = useCallback(async () => {
     try {
-      setStatus(await invoke<Status>('status'))
+      setStatus(await engine.status())
     } catch {
       setStatus(null)
       setMonitors([])
+      monitorsRef.current = []
       return
     }
 
     // Fetched separately, and never allowed to invalidate the status above:
     // the engine serves one connection at a time, so a second request can
     // legitimately arrive a moment too early and fail on its own.
-    if (monitors.length === 0) {
+    if (monitorsRef.current.length === 0) {
       try {
-        setMonitors(await invoke<Monitor[]>('monitors'))
+        const list = await engine.monitors()
+        monitorsRef.current = list
+        setMonitors(list)
       } catch {
-        // Left empty; the next poll tries again.
+        // The next poll tries again.
       }
     }
-  }, [monitors.length])
+  }, [])
 
   useEffect(() => {
     void refresh()
@@ -59,160 +76,167 @@ export default function App() {
     return () => clearInterval(timer)
   }, [refresh])
 
-  async function act(work: () => Promise<unknown>) {
-    setBusy(true)
-    try {
-      await work()
-      setError(null)
+  // Persisting is debounced: renaming a wallpaper types one character at a
+  // time and each keystroke would otherwise be a disk write.
+  const saveTimer = useRef<number | null>(null)
+  const persist = useCallback(
+    (next: Store) => {
+      setStore(next)
+      if (saveTimer.current !== null) clearTimeout(saveTimer.current)
+      saveTimer.current = window.setTimeout(() => void saveStore(next), 300)
+    },
+    [],
+  )
+
+  /** Record an assignment and tell the engine about it in one step. */
+  const assign = useCallback(
+    async (monitorName: string, assignment: Assignment) => {
+      const next: Store = {
+        ...store,
+        assignments: { ...store.assignments, [monitorName]: assignment },
+      }
+      persist(next)
+
+      try {
+        await engine.setPlaylist(monitorName, resolve(next, assignment))
+        setError(null)
+      } catch (e) {
+        setError(String(e))
+      }
       await refresh()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
+    },
+    [store, persist, refresh],
+  )
 
-  async function chooseVideo() {
-    const picked = await open({
-      multiple: false,
-      filters: [{ name: 'Video', extensions: ['mp4', 'webm', 'mkv', 'mov', 'm4v'] }],
-    })
-    if (typeof picked === 'string') {
-      await act(() => invoke('set_video', { path: picked }))
+  // Re-apply everything once the engine appears, so a wallpaper survives the
+  // engine being restarted without the user touching anything.
+  const applied = useRef(false)
+  useEffect(() => {
+    if (!loaded || !status) {
+      applied.current = false
+      return
     }
-  }
+    if (applied.current) return
+    applied.current = true
 
-  const running = status !== null
-  const playing = running && !status.paused
-  const state = !running ? 'off' : status.paused ? 'paused' : 'playing'
-  const stateLabel = !running
-    ? 'Motor kapalı'
-    : status.paused
-      ? 'Duraklatıldı'
-      : 'Oynatılıyor'
+    void (async () => {
+      for (const [monitorName, assignment] of Object.entries(store.assignments)) {
+        if (!assignment) continue
+        try {
+          await engine.setPlaylist(monitorName, resolve(store, assignment))
+        } catch {
+          // The engine went away again; the next appearance retries.
+        }
+      }
+    })()
+  }, [loaded, status, store])
+
+  if (!loaded) {
+    return <div className="app-loading" />
+  }
 
   return (
-    <div className="app">
-      <header className="topbar">
+    <div className="shell">
+      <nav className="sidebar">
         <div className="wordmark">
           Mui<span>vly</span>
         </div>
-        <div className="spacer" />
-        <div className="pill" data-state={state}>
-          <span className="dot" />
-          {stateLabel}
-        </div>
-      </header>
 
-      {!running ? (
-        <section className="card">
-          <div className="empty">
+        <div className="nav">
+          {NAV.map((entry) => (
+            <button
+              key={entry.id}
+              className="nav-item"
+              data-active={view === entry.id}
+              onClick={() => setView(entry.id)}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="pill sidebar-status" data-state={!status ? 'off' : status.paused ? 'paused' : 'playing'}>
+          <span className="dot" />
+          {!status ? 'Motor kapalı' : status.paused ? 'Duraklatıldı' : 'Oynatılıyor'}
+        </div>
+      </nav>
+
+      <main className="content">
+        {!status ? (
+          <div className="card empty">
             <h2 className="card-title">Motor çalışmıyor</h2>
             <p>
-              Wallpaper motoru ayrı bir işlem olarak çalışır. Bu pencereyi
+              Duvar kağıdı motoru ayrı bir işlem olarak çalışır. Bu pencereyi
               kapatsan da açık kalır.
             </p>
             <button
               className="primary"
-              disabled={busy}
-              onClick={() => act(() => invoke('start_engine', { video: null }))}
+              disabled={starting}
+              onClick={async () => {
+                setStarting(true)
+                try {
+                  await engine.start()
+                  setError(null)
+                  // Give it a moment to open its pipe before the next poll.
+                  setTimeout(() => void refresh(), 800)
+                } catch (e) {
+                  setError(String(e))
+                } finally {
+                  setStarting(false)
+                }
+              }}
             >
               Motoru başlat
             </button>
             {error && <p className="error-text">{error}</p>}
           </div>
-        </section>
-      ) : (
-        <>
-          <section className="card">
-            <h2 className="card-title">Duvar kağıdı</h2>
-            <p className="card-sub">
-              Video GPU'da çözülür. Ekran görünmüyorken çözme tamamen durur.
-            </p>
-
-            <div className="current">
-              {status.video ? (
-                // Direction is rtl in CSS so a long path is clipped from the
-                // start and the file name stays readable.
-                <span className="path">{status.video}</span>
-              ) : (
-                <span className="none">Seçili video yok — yer tutucu gradyan gösteriliyor</span>
-              )}
-            </div>
-
-            <div className="row">
-              <button className="primary" disabled={busy} onClick={chooseVideo}>
-                Video seç
-              </button>
-              <button
-                disabled={busy || !status.video}
-                onClick={() => act(() => invoke('clear_video'))}
-              >
-                Kaldır
-              </button>
-            </div>
-
+        ) : (
+          <>
             {error && <p className="error-text">{error}</p>}
-          </section>
 
-          <section className="card">
-            <h2 className="card-title">Kare hızı</h2>
-            <p className="card-sub">
-              Donanımına göre otomatik seçildi. Pilde ve ekran görünmüyorken
-              zaten düşürülüyor.
-            </p>
-
-            <div className="row">
-              <input
-                type="range"
-                min={10}
-                max={120}
-                step={5}
-                value={fpsDraft ?? status.fps}
-                onChange={(e) => setFpsDraft(Number(e.target.value))}
-                onMouseUp={() => {
-                  if (fpsDraft !== null && fpsDraft !== status.fps) {
-                    void act(() => invoke('set_fps', { fps: fpsDraft }))
-                  }
-                  setFpsDraft(null)
-                }}
+            {view === 'library' && (
+              <Library
+                store={store}
+                monitors={monitors}
+                onChange={persist}
+                onAssign={(monitorName, itemId) =>
+                  void assign(monitorName, { kind: 'item', id: itemId })
+                }
               />
-              <span className="fps-value">{fpsDraft ?? status.fps} fps</span>
-            </div>
-          </section>
+            )}
 
-          <section className="card">
-            <h2 className="card-title">Ekranlar</h2>
-            <p className="card-sub">
-              {monitors.length} ekran. Aynı GPU'ya bağlı ekranlar tek bir
-              çözme işlemini paylaşır.
-            </p>
+            {view === 'playlists' && (
+              <Playlists
+                store={store}
+                monitors={monitors}
+                onChange={persist}
+                onAssignPlaylist={(monitorName, playlistId) =>
+                  void assign(monitorName, { kind: 'playlist', id: playlistId })
+                }
+              />
+            )}
 
-            <div className="monitors">
-              {monitors.map((m) => (
-                <div className="monitor" key={m.name}>
-                  <div>
-                    <div className="monitor-name">
-                      {m.name.replace(/^\\\\\.\\/, '')}
-                    </div>
-                    <div className="monitor-meta">
-                      {m.width}×{m.height} · {m.refresh_hz} Hz · {m.adapter}
-                    </div>
-                  </div>
-                  <div className="spacer" />
-                  {m.primary && <span className="badge">Birincil</span>}
-                </div>
-              ))}
-            </div>
-          </section>
+            {view === 'monitors' && (
+              <Monitors
+                store={store}
+                monitors={monitors}
+                status={status}
+                onAssign={(monitorName, assignment) => void assign(monitorName, assignment)}
+                onRefresh={() => void refresh()}
+              />
+            )}
 
-          <p className="hint">
-            {playing
-              ? 'Pencereyi kapatmak uygulamayı sistem tepsisine küçültür; duvar kağıdı çalışmaya devam eder.'
-              : 'Bir pencere ekranı tamamen kapattığı için çözme durduruldu.'}
-          </p>
-        </>
-      )}
+            {view === 'settings' && (
+              <Settings
+                store={store}
+                status={status}
+                onChange={persist}
+                onRefresh={() => void refresh()}
+              />
+            )}
+          </>
+        )}
+      </main>
     </div>
   )
 }

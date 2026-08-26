@@ -5,6 +5,7 @@
 
 mod engine;
 mod pipe;
+mod store;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -16,12 +17,19 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             pipe::status,
             pipe::monitors,
-            pipe::set_video,
-            pipe::clear_video,
+            pipe::set_playlist,
+            pipe::next_item,
+            pipe::set_monitor_enabled,
             pipe::set_fps,
+            pipe::set_fit,
+            pipe::set_interval,
             pipe::quit_engine,
             engine::engine_installed,
             engine::start_engine,
+            store::load_state,
+            store::save_state,
+            store::state_path,
+            store::file_exists,
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Muivly'yi aç", true, None::<&str>)?;

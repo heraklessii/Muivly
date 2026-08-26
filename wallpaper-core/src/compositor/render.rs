@@ -1,11 +1,17 @@
 //! D3D11 device, swap chains and the draw call.
 //!
-//! One device per adapter. Monitors attached to the same GPU share it (and
-//! will share a decoded video texture); monitors on a different GPU get their
-//! own device, because sharing a texture across adapters costs a trip through
-//! system memory and that is exactly what this project refuses to do.
+//! One device per adapter. Monitors attached to the same GPU share it;
+//! monitors on a different GPU get their own device, because sharing a
+//! texture across adapters costs a trip through system memory and that is
+//! exactly what this project refuses to do.
+//!
+//! Decoders are keyed by file path, so two monitors showing the same video
+//! share one decode without anything having to arrange it. Two monitors
+//! showing *different* videos genuinely need two decodes; there is no way
+//! around that, which is why the low tiers do not offer it.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use windows::core::{Interface, PCSTR};
@@ -37,37 +43,82 @@ use super::shader::SOURCE;
 use super::window::Surface;
 use crate::decoder::VideoDecoder;
 
+/// How a video is mapped onto a screen of a different shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fit {
+    /// Fill the screen, crop whatever hangs over. No bars, some loss.
+    #[default]
+    Cover,
+    /// Show the whole frame, leave bars where the shapes disagree.
+    Contain,
+    /// Fill the screen by distorting. Included because some wallpapers are
+    /// abstract enough not to care.
+    Stretch,
+}
+
+impl Fit {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "cover" => Some(Fit::Cover),
+            "contain" => Some(Fit::Contain),
+            "stretch" => Some(Fit::Stretch),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Fit::Cover => "cover",
+            Fit::Contain => "contain",
+            Fit::Stretch => "stretch",
+        }
+    }
+
+    /// UV scale and offset that map screen space onto the video.
+    fn uv(self, video: (u32, u32), screen: (u32, u32)) -> ([f32; 2], [f32; 2]) {
+        if self == Fit::Stretch || video.1 == 0 || screen.1 == 0 {
+            return ([1.0, 1.0], [0.0, 0.0]);
+        }
+
+        let video_aspect = video.0 as f32 / video.1 as f32;
+        let screen_aspect = screen.0 as f32 / screen.1 as f32;
+        let wider = video_aspect > screen_aspect;
+
+        // Cover crops the long axis (a scale below 1 samples a slice of the
+        // video); contain shrinks it instead, which needs a scale above 1 so
+        // the sample runs off the texture and shows as a bar.
+        let ratio = if wider {
+            screen_aspect / video_aspect
+        } else {
+            video_aspect / screen_aspect
+        };
+        let scale = if self == Fit::Cover {
+            ratio
+        } else {
+            1.0 / ratio
+        };
+
+        if wider == (self == Fit::Cover) {
+            ([scale, 1.0], [(1.0 - scale) / 2.0, 0.0])
+        } else {
+            ([1.0, scale], [0.0, (1.0 - scale) / 2.0])
+        }
+    }
+}
+
 /// Matches the `cbuffer Params` in the shader. Constant buffers are sized in
 /// 16-byte registers, hence the padding.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct Params {
     time: f32,
-    _pad0: f32,
-    /// Maps screen UV onto the video, cropping the overhanging axis so the
-    /// frame fills the monitor without stretching.
+    /// 1 in contain mode. Sampling past the edge is what produces the bars,
+    /// and the shader needs to know to paint those black rather than smear
+    /// the clamped edge pixel across them.
+    letterbox: f32,
     uv_scale: [f32; 2],
     uv_offset: [f32; 2],
-    _pad1: [f32; 2],
-}
-
-impl Params {
-    /// "Cover" fit: scale until both axes are filled, crop the excess. A
-    /// wallpaper with letterbox bars would look broken, so the choice is
-    /// always to lose some edge rather than show background.
-    fn fit(video: (u32, u32), screen: (u32, u32)) -> ([f32; 2], [f32; 2]) {
-        let video_aspect = video.0 as f32 / video.1 as f32;
-        let screen_aspect = screen.0 as f32 / screen.1 as f32;
-
-        if video_aspect > screen_aspect {
-            // Video is wider: show a horizontal slice of it.
-            let scale = screen_aspect / video_aspect;
-            ([scale, 1.0], [(1.0 - scale) / 2.0, 0.0])
-        } else {
-            let scale = video_aspect / screen_aspect;
-            ([1.0, scale], [0.0, (1.0 - scale) / 2.0])
-        }
-    }
+    _pad: [f32; 2],
 }
 
 /// One monitor: its window, its swap chain, its view.
@@ -83,29 +134,30 @@ struct Target {
     /// Set when DXGI reports the window is fully covered. While it is set the
     /// target is not drawn at all — only cheaply polled.
     occluded: bool,
+    /// Which file this monitor shows. `None` means the placeholder gradient.
+    video: Option<PathBuf>,
+    /// A monitor the user switched off keeps whatever Windows draws there.
+    enabled: bool,
 }
 
 pub struct Renderer {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     vs: ID3D11VertexShader,
-    /// The placeholder gradient, used when there is no video to play.
+    /// The placeholder gradient, used when a monitor has no video.
     ps_gradient: ID3D11PixelShader,
     ps_video: ID3D11PixelShader,
     sampler: ID3D11SamplerState,
     params: ID3D11Buffer,
     targets: Vec<Target>,
-    /// One decoder for this adapter, feeding every monitor attached to it.
-    decoder: Option<VideoDecoder>,
+    /// Keyed by path: monitors showing the same file share one decode.
+    decoders: HashMap<PathBuf, VideoDecoder>,
+    fit: Fit,
 }
 
 impl Renderer {
     /// Build a renderer for every surface on one adapter.
-    pub fn new(
-        luid: i64,
-        surfaces: Vec<Surface>,
-        video: Option<&Path>,
-    ) -> windows::core::Result<Self> {
+    pub fn new(luid: i64, surfaces: Vec<Surface>) -> windows::core::Result<Self> {
         unsafe {
             let adapter = adapter_by_luid(luid)?;
 
@@ -147,11 +199,6 @@ impl Renderer {
             let params = make_params_buffer(&device)?;
             let sampler = make_sampler(&device)?;
 
-            let decoder = match video {
-                Some(path) => Some(VideoDecoder::open(&device, path)?),
-                None => None,
-            };
-
             Ok(Self {
                 device,
                 context,
@@ -161,38 +208,97 @@ impl Renderer {
                 sampler,
                 params,
                 targets,
-                decoder,
+                decoders: HashMap::new(),
+                fit: Fit::default(),
             })
         }
-    }
-
-    /// Swap the wallpaper without tearing down the device, its swap chains
-    /// or its windows — the desktop keeps showing the old frame until the
-    /// first new one arrives.
-    pub fn set_video(&mut self, video: Option<&Path>) -> windows::core::Result<()> {
-        self.decoder = match video {
-            Some(path) => Some(VideoDecoder::open(&self.device, path)?),
-            None => None,
-        };
-        Ok(())
-    }
-
-    /// The video's pixel dimensions, if a video is playing.
-    pub fn video_size(&self) -> Option<(u32, u32)> {
-        self.decoder.as_ref().map(|d| {
-            let frame = d.frame();
-            (frame.width, frame.height)
-        })
     }
 
     pub fn monitor_count(&self) -> usize {
         self.targets.len()
     }
 
+    /// Whether this adapter drives the named display.
+    pub fn has_monitor(&self, device_name: &str) -> bool {
+        self.targets
+            .iter()
+            .any(|t| t.monitor.device_name == device_name)
+    }
+
+    pub fn set_fit(&mut self, fit: Fit) {
+        self.fit = fit;
+    }
+
+    /// Point one monitor at a file, or at nothing.
+    ///
+    /// The device, its swap chains and its windows all stay up, so the
+    /// desktop keeps showing the previous frame until the first new one
+    /// arrives — no flicker, no black gap.
+    pub fn set_video(
+        &mut self,
+        device_name: &str,
+        video: Option<&Path>,
+    ) -> windows::core::Result<()> {
+        let Some(target) = self
+            .targets
+            .iter_mut()
+            .find(|t| t.monitor.device_name == device_name)
+        else {
+            return Ok(());
+        };
+
+        target.video = video.map(|p| p.to_path_buf());
+        self.sync_decoders()
+    }
+
+    pub fn set_enabled(&mut self, device_name: &str, enabled: bool) -> windows::core::Result<()> {
+        if let Some(target) = self
+            .targets
+            .iter_mut()
+            .find(|t| t.monitor.device_name == device_name)
+        {
+            target.enabled = enabled;
+        }
+        self.sync_decoders()
+    }
+
+    /// Open decoders that are now needed and drop the ones that are not.
+    ///
+    /// Dropping matters more than opening: a decoder nobody references still
+    /// holds GPU buffers and a Media Foundation thread pool.
+    fn sync_decoders(&mut self) -> windows::core::Result<()> {
+        let wanted: Vec<PathBuf> = self
+            .targets
+            .iter()
+            .filter(|t| t.enabled)
+            .filter_map(|t| t.video.clone())
+            .collect();
+
+        self.decoders.retain(|path, _| wanted.contains(path));
+
+        for path in wanted {
+            if !self.decoders.contains_key(&path) {
+                let decoder = VideoDecoder::open(&self.device, &path)?;
+                self.decoders.insert(path, decoder);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// How many times each open video has looped. The compositor uses this to
+    /// advance a playlist when a clip ends.
+    pub fn loop_counts(&self) -> Vec<(PathBuf, u32)> {
+        self.decoders
+            .iter()
+            .map(|(path, decoder)| (path.clone(), decoder.loops()))
+            .collect()
+    }
+
     /// Draw one frame to every visible monitor on this adapter.
     ///
     /// Returns how many were actually drawn. Zero means everything on this
-    /// adapter is covered, and the caller can stop spending time here.
+    /// adapter is covered or switched off, and the caller can back off.
     pub fn draw(&mut self, elapsed: Duration) -> windows::core::Result<usize> {
         let mut drawn = 0;
         let time = elapsed.as_secs_f32();
@@ -204,7 +310,7 @@ impl Renderer {
             .targets
             .iter_mut()
             .map(|target| {
-                if crate::power::is_covered(&target.monitor) {
+                if !target.enabled || crate::power::is_covered(&target.monitor) {
                     return false;
                 }
 
@@ -227,22 +333,56 @@ impl Renderer {
             return Ok(0);
         }
 
-        // One decode for the whole adapter — every monitor attached to it
-        // samples the same texture. This is the "one decode, shared texture"
-        // rule in practice.
-        let video = match &mut self.decoder {
-            Some(decoder) => {
+        // Only decode what a visible monitor is actually showing.
+        let needed: Vec<PathBuf> = self
+            .targets
+            .iter()
+            .zip(&visible)
+            .filter(|(_, visible)| **visible)
+            .filter_map(|(target, _)| target.video.clone())
+            .collect();
+
+        for (path, decoder) in self.decoders.iter_mut() {
+            if needed.contains(path) {
                 decoder.update(&self.context, elapsed)?;
-                Some(decoder.frame())
             }
-            None => None,
-        };
+        }
 
         unsafe {
             for (target, visible) in self.targets.iter_mut().zip(visible) {
                 if !visible {
                     continue;
                 }
+
+                let frame = target
+                    .video
+                    .as_ref()
+                    .and_then(|path| self.decoders.get(path))
+                    .map(|decoder| decoder.frame());
+
+                // The fit is per monitor: the same video on a 16:9 and a
+                // 16:10 screen needs a different crop.
+                let (uv_scale, uv_offset) = match &frame {
+                    Some(frame) => self
+                        .fit
+                        .uv((frame.width, frame.height), (target.width, target.height)),
+                    None => ([1.0, 1.0], [0.0, 0.0]),
+                };
+
+                self.context.UpdateSubresource(
+                    &self.params,
+                    0,
+                    None,
+                    &Params {
+                        time,
+                        letterbox: if self.fit == Fit::Contain { 1.0 } else { 0.0 },
+                        uv_scale,
+                        uv_offset,
+                        ..Default::default()
+                    } as *const _ as *const _,
+                    0,
+                    0,
+                );
 
                 self.context
                     .OMSetRenderTargets(Some(&[Some(target.rtv.clone())]), None);
@@ -255,35 +395,13 @@ impl Renderer {
                     MaxDepth: 1.0,
                 }]));
 
-                // The fit differs per monitor: the same video on a 16:9 and a
-                // 16:10 screen needs a different crop.
-                let (uv_scale, uv_offset) = match &video {
-                    Some(frame) => {
-                        Params::fit((frame.width, frame.height), (target.width, target.height))
-                    }
-                    None => ([1.0, 1.0], [0.0, 0.0]),
-                };
-                self.context.UpdateSubresource(
-                    &self.params,
-                    0,
-                    None,
-                    &Params {
-                        time,
-                        uv_scale,
-                        uv_offset,
-                        ..Default::default()
-                    } as *const _ as *const _,
-                    0,
-                    0,
-                );
-
                 self.context
                     .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 self.context.VSSetShader(&self.vs, None);
                 self.context
                     .PSSetConstantBuffers(0, Some(&[Some(self.params.clone())]));
 
-                match &video {
+                match &frame {
                     Some(frame) => {
                         self.context.PSSetShader(&self.ps_video, None);
                         self.context
@@ -385,6 +503,8 @@ unsafe fn make_target(
             width,
             height,
             occluded: false,
+            video: None,
+            enabled: true,
         })
     }
 }
@@ -408,6 +528,25 @@ unsafe fn make_params_buffer(device: &ID3D11Device) -> windows::core::Result<ID3
         let mut buffer = None;
         device.CreateBuffer(&desc, Some(&data), Some(&mut buffer))?;
         Ok(buffer.expect("CreateBuffer succeeded without a buffer"))
+    }
+}
+
+unsafe fn make_sampler(device: &ID3D11Device) -> windows::core::Result<ID3D11SamplerState> {
+    unsafe {
+        let desc = D3D11_SAMPLER_DESC {
+            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+            // Clamp, not wrap: the crop can land a sample fractionally past
+            // the edge, and wrapping would show a strip of the opposite side.
+            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+            MaxLOD: f32::MAX,
+            ..Default::default()
+        };
+
+        let mut sampler = None;
+        device.CreateSamplerState(&desc, Some(&mut sampler))?;
+        Ok(sampler.expect("CreateSamplerState succeeded without a sampler"))
     }
 }
 
@@ -444,25 +583,6 @@ unsafe fn pixel_shader(
         let mut ps = None;
         device.CreatePixelShader(code, None, Some(&mut ps))?;
         Ok(ps.expect("CreatePixelShader succeeded without a shader"))
-    }
-}
-
-unsafe fn make_sampler(device: &ID3D11Device) -> windows::core::Result<ID3D11SamplerState> {
-    unsafe {
-        let desc = D3D11_SAMPLER_DESC {
-            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-            // Clamp, not wrap: the crop can land a sample fractionally past
-            // the edge, and wrapping would show a strip of the opposite side.
-            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
-            MaxLOD: f32::MAX,
-            ..Default::default()
-        };
-
-        let mut sampler = None;
-        device.CreateSamplerState(&desc, Some(&mut sampler))?;
-        Ok(sampler.expect("CreateSamplerState succeeded without a sampler"))
     }
 }
 
@@ -503,5 +623,71 @@ unsafe fn compile(
         }
 
         Ok(code.expect("D3DCompile succeeded without producing code"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A video and screen of the same shape need no adjustment at all.
+    #[test]
+    fn matching_aspect_needs_no_adjustment() {
+        for fit in [Fit::Cover, Fit::Contain, Fit::Stretch] {
+            let (scale, offset) = fit.uv((1920, 1080), (2560, 1440));
+            assert!((scale[0] - 1.0).abs() < 0.001, "{fit:?}");
+            assert!((scale[1] - 1.0).abs() < 0.001, "{fit:?}");
+            assert!(offset[0].abs() < 0.001, "{fit:?}");
+            assert!(offset[1].abs() < 0.001, "{fit:?}");
+        }
+    }
+
+    #[test]
+    fn cover_crops_a_wide_video_horizontally() {
+        // 21:9 video on a 16:9 screen: the sides are lost.
+        let (scale, offset) = Fit::Cover.uv((2560, 1080), (1920, 1080));
+        assert!(scale[0] < 1.0);
+        assert_eq!(scale[1], 1.0);
+        assert!(offset[0] > 0.0, "the crop must be centred");
+    }
+
+    #[test]
+    fn contain_shrinks_a_wide_video_vertically() {
+        // Same video, but now the whole width is kept and bars appear above
+        // and below — so the vertical axis samples past the texture.
+        let (scale, offset) = Fit::Contain.uv((2560, 1080), (1920, 1080));
+        assert_eq!(scale[0], 1.0);
+        assert!(scale[1] > 1.0);
+        assert!(offset[1] < 0.0);
+    }
+
+    #[test]
+    fn cover_crops_a_tall_video_vertically() {
+        // A 9:16 phone video on a 16:9 screen loses its top and bottom.
+        let (scale, offset) = Fit::Cover.uv((1080, 1920), (1920, 1080));
+        assert_eq!(scale[0], 1.0);
+        assert!(scale[1] < 1.0);
+        assert!(offset[1] > 0.0);
+    }
+
+    #[test]
+    fn stretch_never_adjusts() {
+        let (scale, offset) = Fit::Stretch.uv((2560, 1080), (1920, 1080));
+        assert_eq!(scale, [1.0, 1.0]);
+        assert_eq!(offset, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_zero_sized_video_does_not_divide_by_zero() {
+        let (scale, _) = Fit::Cover.uv((0, 0), (1920, 1080));
+        assert_eq!(scale, [1.0, 1.0]);
+    }
+
+    #[test]
+    fn fit_names_round_trip() {
+        for fit in [Fit::Cover, Fit::Contain, Fit::Stretch] {
+            assert_eq!(Fit::parse(fit.name()), Some(fit));
+        }
+        assert_eq!(Fit::parse("nonsense"), None);
     }
 }

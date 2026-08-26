@@ -157,3 +157,47 @@ mimari etkisi olan veya sonraki session'ın bilmesi gereken şeyler.
 - `cargo build --release` Tauri'yi dev moduna sokuyor (`cfg(dev)`), uygulama
   `localhost:5183`'ü yüklemeye çalışıyor. Üretim derlemesi `npx tauri build`
   ile yapılmalı.
+
+## 2026-08-26 — Kitaplık, listeler, monitör başına duvar kağıdı
+
+**Motor:**
+- `Renderer` artık monitör başına video tutuyor. Decoder'lar **dosya yoluna
+  göre** anahtarlanıyor (`HashMap<PathBuf, VideoDecoder>`) — aynı videoyu
+  gösteren iki monitör tek decode'u kendiliğinden paylaşıyor, kimsenin
+  ayarlaması gerekmiyor. Atama değişince kullanılmayan decoder düşürülüyor.
+- Oynatma listesi compositor'da: monitör başına `items` + `index`. Geçiş ya
+  süreyle ya klip bitince (decoder'a `loops()` sayacı eklendi).
+- Ölçekleme kipi: cover / contain / stretch. Contain'de shader kenar dışını
+  siyah boyuyor — sampler clamp ettiği için yoksa kenar pikseli banda
+  yayılıyordu.
+- IPC genişledi: `set <monitor> <path>|<path>`, `next`, `enable`, `fit`,
+  `interval`. Yollar `|` ile ayrılıyor (Windows yolunda boşluk kural, `|`
+  imkânsız).
+
+**Arayüz:**
+- Kenar çubuklu kabuk: Kitaplık / Listeler / Ekranlar / Ayarlar.
+- Kitaplık: ekleme (çoklu seçim), kaldırma, yeniden adlandırma, arama,
+  ekrana uygulama. Küçük resimler gerçek video karesinden.
+- Listeler: oluştur/sil/yeniden adlandır, sıra değiştirme, kitaplıktan ekleme.
+- Ekranlar: gerçek masaüstü yerleşiminin ölçekli önizlemesi, monitör başına
+  atama (tek video veya liste), aç/kapa, "Sonraki".
+- Ayarlar: fps, ölçekleme, liste geçiş aralığı, motoru durdurma, veri yolu.
+- Durum `%APPDATA%\Muivly\state.json`'da. Şema frontend'in; Rust yalnız
+  geçerli JSON olduğunu doğrulayıp atomik yazıyor (yaz-ve-yeniden-adlandır).
+
+**Yolda çıkan hatalar:**
+- `state.json` BOM'lu yazılınca `JSON.parse` patlıyor, UI boş kitaplıkla
+  başlıyor ve **ilk kayıt iyi dosyanın üstüne yazıyordu** — sessiz veri kaybı.
+  Artık Rust BOM'u kırpıyor; JSON yine de bozuksa dosya
+  `state.corrupt-<zaman>.json` olarak kenara alınıyor, üstüne yazılmıyor.
+- Küçük resimler canvas'a çizilip `toDataURL` ile alınıyordu; asset protokolü
+  farklı origin olduğu için canvas "tainted" olup atıyordu. Artık duraklatılmış
+  `<video>` elemanı gösteriliyor.
+- **Ekran görüntüsü yöntemi yanıltıcıydı** (bu bir uygulama hatası değil, ama
+  saat kaybettirdi): `BitBlt`/`CopyFromScreen` DWM ile kompoze edilen pencereleri
+  yakalayamıyor, ayrıca DPI-farkında olmayan bir işlemden alınan pencere ölçüsü
+  gerçek boyutun %80'i çıkıp görüntüyü kırpıyor. Doğrusu:
+  `SetProcessDpiAwarenessContext` + `PrintWindow(..., PW_RENDERFULLCONTENT)`.
+- `--diag` artık her pencerenin gerçek ebeveynini yazıyor. Bir ara duvar
+  kağıdının ikonların üstüne çıktığını sandım; ebeveyn çıktısı `parent=0x101e8`
+  (WorkerW) göstererek yanlış alarmı bir komutta kapattı.

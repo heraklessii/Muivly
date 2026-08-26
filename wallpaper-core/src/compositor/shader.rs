@@ -13,10 +13,10 @@ pub const SOURCE: &str = r#"
 cbuffer Params : register(b0)
 {
     float  time;
-    float  _pad0;
+    float  letterbox;
     float2 uvScale;
     float2 uvOffset;
-    float2 _pad1;
+    float2 _pad;
 };
 
 Texture2D<float>  texLuma   : register(t0);
@@ -43,6 +43,14 @@ VSOut vs_main(uint id : SV_VertexID)
 float4 ps_video(VSOut i) : SV_TARGET
 {
     float2 uv = i.uv * uvScale + uvOffset;
+
+    // In contain mode the sample runs off the texture where the bars belong.
+    // The sampler clamps rather than failing, so without this the edge pixel
+    // would be smeared across the bar instead of it being black.
+    if (letterbox > 0.5 && (any(uv < 0.0) || any(uv > 1.0)))
+    {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
 
     float  y = texLuma.Sample(samp, uv);
     float2 c = texChroma.Sample(samp, uv);

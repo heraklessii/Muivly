@@ -14,11 +14,21 @@ use serde::Serialize;
 const PIPE: &str = r"\\.\pipe\muivly";
 
 #[derive(Serialize)]
+pub struct MonitorState {
+    pub name: String,
+    pub enabled: bool,
+    /// Which item of the playlist is on screen.
+    pub index: usize,
+    pub items: Vec<String>,
+}
+
+#[derive(Serialize)]
 pub struct Status {
     pub fps: u32,
     pub paused: bool,
-    /// None when the placeholder gradient is showing.
-    pub video: Option<String>,
+    pub fit: String,
+    pub interval_secs: u64,
+    pub monitors: Vec<MonitorState>,
 }
 
 #[derive(Serialize)]
@@ -59,25 +69,77 @@ fn request(line: &str) -> Result<String, String> {
     }
 }
 
+/// Send one line, read lines until `end`.
+fn request_lines(line: &str) -> Result<Vec<String>, String> {
+    let mut pipe = connect()?;
+    writeln!(pipe, "{line}").map_err(|e| e.to_string())?;
+
+    let reader = BufReader::new(pipe);
+    let mut lines = Vec::new();
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        let line = line.trim().to_string();
+        if line == "end" {
+            break;
+        }
+        if let Some(message) = line.strip_prefix("err ") {
+            return Err(message.to_string());
+        }
+        lines.push(line);
+    }
+
+    Ok(lines)
+}
+
 #[tauri::command]
 pub fn status() -> Result<Status, String> {
-    let response = request("status")?;
-
+    let lines = request_lines("status")?;
     let mut status = Status {
         fps: 0,
         paused: false,
-        video: None,
+        fit: "cover".to_string(),
+        interval_secs: 0,
+        monitors: Vec::new(),
     };
 
-    // `ok fps=30 paused=false video=C:\some path\clip.mp4`
-    // The video value can contain spaces, so it is taken as the remainder.
-    for field in response.trim_start_matches("ok").trim().splitn(3, ' ') {
-        match field.split_once('=') {
-            Some(("fps", value)) => status.fps = value.parse().unwrap_or(0),
-            Some(("paused", value)) => status.paused = value == "true",
-            Some(("video", value)) if value != "-" => status.video = Some(value.to_string()),
-            _ => {}
+    for line in lines {
+        if let Some(rest) = line.strip_prefix("ok ") {
+            // `fps=30 paused=false fit=cover interval=0`
+            for field in rest.split(' ') {
+                match field.split_once('=') {
+                    Some(("fps", v)) => status.fps = v.parse().unwrap_or(0),
+                    Some(("paused", v)) => status.paused = v == "true",
+                    Some(("fit", v)) => status.fit = v.to_string(),
+                    Some(("interval", v)) => status.interval_secs = v.parse().unwrap_or(0),
+                    _ => {}
+                }
+            }
+            continue;
         }
+
+        // `monitor <name> <enabled> <index> <path>|<path>`
+        // The list is last because paths contain spaces; it is split on `|`,
+        // which Windows paths cannot contain.
+        let parts: Vec<&str> = line.splitn(5, ' ').collect();
+        if parts.len() < 4 || parts[0] != "monitor" {
+            continue;
+        }
+
+        status.monitors.push(MonitorState {
+            name: parts[1].to_string(),
+            enabled: parts[2] == "true",
+            index: parts[3].parse().unwrap_or(0),
+            items: parts
+                .get(4)
+                .map(|list| {
+                    list.split('|')
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        });
     }
 
     Ok(status)
@@ -85,19 +147,10 @@ pub fn status() -> Result<Status, String> {
 
 #[tauri::command]
 pub fn monitors() -> Result<Vec<Monitor>, String> {
-    let mut pipe = connect()?;
-    writeln!(pipe, "monitors").map_err(|e| e.to_string())?;
-
-    let reader = BufReader::new(pipe);
+    let lines = request_lines("monitors")?;
     let mut monitors = Vec::new();
 
-    for line in reader.lines() {
-        let line = line.map_err(|e| e.to_string())?;
-        let line = line.trim();
-        if line == "end" {
-            break;
-        }
-
+    for line in lines {
         // `monitor <name> <x> <y> <w> <h> <hz> <primary> <adapter...>`
         // The adapter name is last because it is the only field with spaces.
         let parts: Vec<&str> = line.splitn(9, ' ').collect();
@@ -121,18 +174,33 @@ pub fn monitors() -> Result<Vec<Monitor>, String> {
 }
 
 #[tauri::command]
-pub fn set_video(path: String) -> Result<(), String> {
-    request(&format!("set {path}")).map(|_| ())
+pub fn set_playlist(monitor: String, items: Vec<String>) -> Result<(), String> {
+    request(&format!("set {monitor} {}", items.join("|"))).map(|_| ())
 }
 
 #[tauri::command]
-pub fn clear_video() -> Result<(), String> {
-    request("clear").map(|_| ())
+pub fn next_item(monitor: String) -> Result<(), String> {
+    request(&format!("next {monitor}")).map(|_| ())
+}
+
+#[tauri::command]
+pub fn set_monitor_enabled(monitor: String, enabled: bool) -> Result<(), String> {
+    request(&format!("enable {monitor} {enabled}")).map(|_| ())
 }
 
 #[tauri::command]
 pub fn set_fps(fps: u32) -> Result<(), String> {
     request(&format!("fps {fps}")).map(|_| ())
+}
+
+#[tauri::command]
+pub fn set_fit(fit: String) -> Result<(), String> {
+    request(&format!("fit {fit}")).map(|_| ())
+}
+
+#[tauri::command]
+pub fn set_interval(seconds: u64) -> Result<(), String> {
+    request(&format!("interval {seconds}")).map(|_| ())
 }
 
 #[tauri::command]

@@ -2,19 +2,27 @@
 //!
 //! The protocol is one UTF-8 line per message, because the message set is
 //! small enough that a serialisation library would cost more (binary size, a
-//! dependency, a schema to keep in sync) than it saves. If this grows past a
-//! dozen commands, that trade flips — see docs/decisions.md.
+//! dependency, a schema to keep in sync) than it saves. If this grows much
+//! further, that trade flips — see docs/decisions.md.
 //!
 //! Requests:
-//!   status                 -> `ok fps=<n> paused=<bool> video=<path|->`
-//!   monitors               -> one `monitor <name> <x> <y> <w> <h> <hz> <primary> <adapter>`
-//!                             line per display, then `end`
-//!   set <path>             -> `ok`  (path may contain spaces; it runs to EOL)
-//!   clear                  -> `ok`
-//!   fps <n>                -> `ok`
-//!   quit                   -> `ok`, then the engine shuts down
+//!   status                    -> `ok fps=<n> paused=<b> fit=<name> interval=<s>`,
+//!                                then one `monitor <name> <enabled> <index> <path>|...`
+//!                                line per display, then `end`
+//!   monitors                  -> one `monitor <name> <x> <y> <w> <h> <hz> <primary> <adapter>`
+//!                                line per display, then `end`
+//!   set <monitor> <path>|...  -> `ok`   (empty list clears; `|` separates a playlist)
+//!   next <monitor>            -> `ok`
+//!   enable <monitor> <bool>   -> `ok`
+//!   fps <n>                   -> `ok`
+//!   fit <cover|contain|stretch> -> `ok`
+//!   interval <seconds>        -> `ok`   (0 = advance when the clip ends)
+//!   quit                      -> `ok`, then the engine shuts down
 //!
 //! Anything unrecognised gets `err unknown command`.
+//!
+//! Paths are separated by `|` rather than spaces, and never quoted: Windows
+//! paths contain spaces constantly but never a pipe character.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
@@ -23,33 +31,67 @@ use std::sync::{Arc, Mutex};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::Storage::FileSystem::{
-    ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, PIPE_ACCESS_DUPLEX,
-};
+use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
 use crate::caps::GpuProfile;
+use crate::compositor::Fit;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\muivly";
 
 /// What the UI can ask the engine to do.
 #[derive(Debug, Clone)]
 pub enum Command {
-    SetVideo(PathBuf),
-    Clear,
+    /// An empty list clears the monitor; one item is a fixed wallpaper; more
+    /// is a playlist.
+    SetPlaylist {
+        monitor: String,
+        items: Vec<PathBuf>,
+    },
+    SetEnabled {
+        monitor: String,
+        enabled: bool,
+    },
+    Next {
+        monitor: String,
+    },
     Fps(u32),
+    SetFit(Fit),
+    Interval(u64),
     Quit,
 }
 
+#[derive(Debug, Clone)]
+pub struct MonitorState {
+    pub device_name: String,
+    pub enabled: bool,
+    pub index: usize,
+    pub items: Vec<PathBuf>,
+}
+
 /// What the engine tells the UI about itself.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Status {
     pub fps: u32,
     pub paused: bool,
-    pub video: Option<PathBuf>,
+    pub fit: String,
+    pub interval_secs: u64,
+    pub monitors: Vec<MonitorState>,
+}
+
+impl Default for Status {
+    fn default() -> Self {
+        Self {
+            fps: 0,
+            paused: false,
+            fit: Fit::default().name().to_string(),
+            interval_secs: 0,
+            monitors: Vec::new(),
+        }
+    }
 }
 
 /// Start serving on a background thread. Returns immediately.
@@ -83,8 +125,8 @@ fn accept_one(
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES,
-            4096,
-            4096,
+            8192,
+            8192,
             0,
             None,
         )
@@ -148,16 +190,28 @@ fn handle(
     match verb {
         "status" => {
             let status = status.lock().expect("status mutex poisoned");
-            format!(
-                "ok fps={} paused={} video={}\n",
-                status.fps,
-                status.paused,
-                status
-                    .video
-                    .as_ref()
+            let mut out = format!(
+                "ok fps={} paused={} fit={} interval={}\n",
+                status.fps, status.paused, status.fit, status.interval_secs
+            );
+
+            for monitor in &status.monitors {
+                let items: Vec<String> = monitor
+                    .items
+                    .iter()
                     .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "-".to_string())
-            )
+                    .collect();
+                out.push_str(&format!(
+                    "monitor {} {} {} {}\n",
+                    monitor.device_name,
+                    monitor.enabled,
+                    monitor.index,
+                    items.join("|")
+                ));
+            }
+
+            out.push_str("end\n");
+            out
         }
 
         "monitors" => {
@@ -181,21 +235,68 @@ fn handle(
             out
         }
 
-        // The path runs to end of line rather than being quoted: Windows
-        // paths contain spaces constantly and there is exactly one argument.
-        "set" if !rest.is_empty() => {
-            let path = PathBuf::from(rest);
-            if !path.is_file() {
-                return format!("err no such file: {}\n", path.display());
+        "set" => {
+            let Some((monitor, list)) = rest.split_once(' ') else {
+                // No list at all means clear this monitor.
+                return send(
+                    commands,
+                    Command::SetPlaylist {
+                        monitor: rest.to_string(),
+                        items: Vec::new(),
+                    },
+                );
+            };
+
+            let mut items = Vec::new();
+            for part in list.split('|').map(str::trim).filter(|p| !p.is_empty()) {
+                let path = PathBuf::from(part);
+                if !path.is_file() {
+                    return format!("err no such file: {part}\n");
+                }
+                items.push(path);
             }
-            send(commands, Command::SetVideo(path))
+
+            send(
+                commands,
+                Command::SetPlaylist {
+                    monitor: monitor.to_string(),
+                    items,
+                },
+            )
         }
 
-        "clear" => send(commands, Command::Clear),
+        "next" if !rest.is_empty() => send(
+            commands,
+            Command::Next {
+                monitor: rest.to_string(),
+            },
+        ),
+
+        "enable" => match rest.split_once(' ') {
+            Some((monitor, value)) => send(
+                commands,
+                Command::SetEnabled {
+                    monitor: monitor.to_string(),
+                    enabled: value == "true",
+                },
+            ),
+            None => "err usage: enable <monitor> <true|false>\n".to_string(),
+        },
 
         "fps" => match rest.parse::<u32>() {
             Ok(n) if (1..=240).contains(&n) => send(commands, Command::Fps(n)),
             _ => "err fps must be 1-240\n".to_string(),
+        },
+
+        "fit" => match Fit::parse(rest) {
+            Some(fit) => send(commands, Command::SetFit(fit)),
+            None => "err fit must be cover, contain or stretch\n".to_string(),
+        },
+
+        "interval" => match rest.parse::<u64>() {
+            // A minute is the shortest interval that is not just flicker.
+            Ok(n) if n == 0 || (60..=86400).contains(&n) => send(commands, Command::Interval(n)),
+            _ => "err interval must be 0 or 60-86400 seconds\n".to_string(),
         },
 
         "quit" => send(commands, Command::Quit),
@@ -244,6 +345,3 @@ impl Write for Pipe {
         Ok(())
     }
 }
-
-// Silences an unused-import warning on a type only named in the signature.
-const _: FILE_FLAGS_AND_ATTRIBUTES = FILE_FLAGS_AND_ATTRIBUTES(0);
