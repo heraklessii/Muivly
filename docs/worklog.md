@@ -311,3 +311,19 @@ Kod okunarak çıkarılan hatalar; hepsi tek turda. Gerekçeler
   hepsini saklıyor ve eski dosyaları hâlâ okuyor.
 - Test sayısı 49 → 60 (çekirdek) + 14 (UI). CI artık UI crate'inde de
   `cargo test` çalıştırıyor.
+
+## 2026-08-27 — Ölçüm ve gerçek makinede doğrulama
+
+- RAM ölçüldü, `MF_LOW_LATENCY` girdi: en kötü hâlde 790 → 706 MB private
+  (%11). Havuz öznitelikleri denendi ve çıkarıldı. Tablo ve gerekçe
+  decisions.md'de.
+- Sıra bozulmasına karşı kalıcı bekçi: `read_loop` zaman damgalarını izliyor,
+  sıra bozulursa bir kez uyarıyor. Dört 4K klipte tetiklenmedi.
+- **Bulunan hata:** UI görünüm geçersiz kılmasını temizlerken `-1` gönderiyor
+  (status satırı ve oturum dosyası da öyle yazıyor) ama `own` ayrıştırıcısı
+  yalnız `-` kabul ediyordu. "Masaüstünü izlesin" düğmesi sessizce `err`
+  alıyordu. Ayrıştırma `parse_overrides`'a çıkarıldı ve testlendi.
+- Gerçek makinede doğrulandı: `speed`/`fade`/`power`/`span`/`freeze`/`own`
+  komutları, geçersiz değerlerin reddi, geçersiz kılmanın kurulup
+  temizlenmesi, dondurmanın CPU'yu %0'a indirmesi ve çözülüp devam etmesi.
+- Test sayısı 60 → 65.

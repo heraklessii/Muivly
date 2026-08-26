@@ -684,3 +684,41 @@ birbirinden ayrılıyor.
 **Gerekçe:** Media Foundation ikisi için de aynı HRESULT'ı veriyor, oysa
 biri ücretsiz bir indirmeyle, diğeri dosyayı dönüştürmekle çözülüyor.
 Kullanıcının yapabileceği iki şey var ve hangisi olduğunu söylemek gerekiyor.
+
+---
+
+## 2026-08-27 — RAM: ölçüldü, `MF_LOW_LATENCY` girdi, havuz ayarı çıktı
+
+**Makine:** AMD Radeon (entegre, birincil çıkış 2560x1440) + RTX 4050
+(1920x1080). 15654 MB RAM. **En kötü hâl:** 4K H.264 klip, iki adapter, yani
+iki decoder. Ölçüm: 25 sn ısınma, sonra 4-5 örnek.
+
+| | working set | private | thread |
+|---|---|---|---|
+| Önce | ~610 MB | ~790 MB | 80-82 |
+| `MF_LOW_LATENCY` | ~540 MB | ~706 MB | 79-81 |
+| + havuz öznitelikleri | ~515 MB | ~703 MB | 79-81 |
+
+**Karar 1 — `MF_LOW_LATENCY` girdi.** ~70 MB working set, ~85 MB private
+(%11). Duvar kağıdı için "gecikme" ile ilgisi yok: decoder'a film oynatmak
+için tuttuğu çözülmüş kare kuyruğunu kurmamasını söylüyor.
+
+**Riski nasıl kapattık:** Bu bayrağın bilinen tehlikesi bazı decoder'ların
+B-frame'leri sunum sırasına geri dizmeyi bırakması — sonuç, hiçbir hata
+vermeyen ince bir titreme. `read_loop` artık aldığı zaman damgalarını izliyor
+ve sıra bozulursa bir kez uyarıyor. Dört ayrı 4K klipte (H.264) hiç
+tetiklenmedi. Tetiklendiğine dair bir rapor, bu satırı geri almanın gerekçesi.
+
+**Karar 2 — havuz öznitelikleri çıktı.** `MF_SA_MINIMUM_OUTPUT_SAMPLE_COUNT`
+ve `MF_SA_REQUIRED_SAMPLE_COUNT` decoder MFT'sine (IMFSourceReaderEx →
+GetTransformForStream) `Ok` dönerek yazılıyor ve **private bytes'ı hiç
+değiştirmiyor** (706 → 703, gürültü sınırında). İkisi de taban belirliyor,
+tavan değil; asıl tabanı codec'in referans kare gereksinimi koyuyor.
+Working set'teki ~25 MB fark sayfalama gürültüsü.
+
+**Kalan:** ~700 MB private hâlâ hedefin çok üstünde ve neredeyse tamamı iki
+4K decoder'ın DPB'si. Buradan sonrası mimari: (a) ölçek kapağını monitör
+başına gerçek çözünürlüğe indirmek — ama processor bir havuz daha ekliyor,
+ölçülmüştü, net zarar; (b) 80 thread'in kaynağı MF'in paylaşılan iş kuyruğu
+havuzu, ve bunu küçültmek `ReadSample`'dan asenkron bir tasarıma geçmek
+demek. İkisi de ayrı bir iş.

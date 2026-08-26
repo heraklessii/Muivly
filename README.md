@@ -85,9 +85,23 @@ decoders — the worst case), 1080p video at 30 fps:
 | Desktop visible | 13.7% |
 | Every monitor covered | **0.4%** |
 
-Memory is the honest weak spot right now: around 265 MB, against a target in
-the low tens. Media Foundation's source reader alone spawns most of the 75
-threads the process carries. That is the next thing to fix.
+Memory is the honest weak spot. The worst case — a 4K clip on both GPUs, so
+two decoders — measured on that same laptop:
+
+| | Working set | Private bytes | Threads |
+|---|---|---|---|
+| Before | 610 MB | 790 MB | 80–82 |
+| Now | **540 MB** | **706 MB** | 79–81 |
+
+The 85 MB came from telling Media Foundation not to build up the queue of
+decoded frames it keeps for smooth playback of a film — a wallpaper has
+nothing to seek through. Asking the decoder for a smaller pool of output
+samples was also tried and does nothing: those knobs set a floor, and the
+floor that matters is the codec's own reference-frame requirement.
+
+What is left is almost entirely those two decoders' picture buffers, and the
+threads are Media Foundation's shared work queue. Both need a different shape,
+not a smaller number.
 
 ## Check your hardware
 
@@ -191,7 +205,7 @@ Design notes and the reasoning behind each choice live in [`docs/`](docs/) —
 - [x] Survives a monitor being plugged in, a resolution change, sleep, and an
       Explorer restart
 - [x] `.muivly` packages — a wallpaper and its credit in one file
-- [ ] Bring memory down further (a 4K clip on two GPUs is still ~780 MB)
+- [ ] Bring memory down further (a 4K clip on two GPUs is still ~700 MB)
 - [ ] First release
 - [ ] Measured RAM/CPU comparison against the alternatives
 

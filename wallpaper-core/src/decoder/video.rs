@@ -42,11 +42,11 @@ use windows::Win32::Media::MediaFoundation::{
     IMFDXGIBuffer, IMFSample, IMFSourceReader, MFCreateAttributes, MFCreateDXGIDeviceManager,
     MFCreateMediaType, MFCreateSourceReaderFromURL, MFMediaType_Video, MFStartup,
     MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_HEVC_ES,
-    MFVideoFormat_NV12, MFVideoFormat_VP90, MFSTARTUP_NOSOCKET, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READERF_ENDOFSTREAM,
-    MF_SOURCE_READER_D3D_MANAGER, MF_SOURCE_READER_DISABLE_CAMERA_PLUGINS,
-    MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-    MF_VERSION,
+    MFVideoFormat_NV12, MFVideoFormat_VP90, MFSTARTUP_NOSOCKET, MF_LOW_LATENCY, MF_MT_FRAME_SIZE,
+    MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+    MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READER_D3D_MANAGER,
+    MF_SOURCE_READER_DISABLE_CAMERA_PLUGINS, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
+    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION,
 };
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use windows::Win32::System::Variant::VT_I8;
@@ -318,6 +318,13 @@ fn read_loop(reader: Sent<IMFSourceReader>, tx: std::sync::mpsc::SyncSender<Deco
 
     let reader = reader.0;
     let mut pass = 0u32;
+    // The last timestamp handed on, to notice frames arriving in the wrong
+    // order. A decoder is supposed to reorder B-frames back into
+    // presentation order before we ever see them; when something stops it
+    // doing that, playback goes subtly jerky and nothing reports an error.
+    // Said once, because if it happens it happens for every frame.
+    let mut previous_pts = i64::MIN;
+    let mut warned = false;
 
     loop {
         let mut flags = 0u32;
@@ -349,6 +356,7 @@ fn read_loop(reader: Sent<IMFSourceReader>, tx: std::sync::mpsc::SyncSender<Deco
                 return;
             }
             pass = pass.wrapping_add(1);
+            previous_pts = i64::MIN;
             continue;
         }
 
@@ -357,6 +365,16 @@ fn read_loop(reader: Sent<IMFSourceReader>, tx: std::sync::mpsc::SyncSender<Deco
             // needs another turn (a format change, or a gap).
             continue;
         };
+
+        if timestamp < previous_pts && !warned {
+            warned = true;
+            eprintln!(
+                "decode: frames are arriving out of order ({} after {}); \
+                 playback will look uneven",
+                timestamp, previous_pts
+            );
+        }
+        previous_pts = timestamp;
 
         let decoded = unsafe {
             let Ok(buffer) = sample.GetBufferByIndex(0) else {
@@ -558,6 +576,12 @@ fn set_nv12(reader: &IMFSourceReader, stream: u32) -> windows::core::Result<()> 
         let output = MFCreateMediaType()?;
         output.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
         output.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+        // Asking the decoder for a smaller output pool was tried here and
+        // does nothing: `MF_SA_MINIMUM_OUTPUT_SAMPLE_COUNT` and
+        // `MF_SA_REQUIRED_SAMPLE_COUNT` on the decoder transform are both
+        // accepted and leave private bytes exactly where they were. They set
+        // a floor, not a ceiling, and the floor that matters is the codec's
+        // own reference-frame requirement. See docs/decisions.md.
         reader.SetCurrentMediaType(stream, None, &output)
     }
 }
@@ -600,6 +624,21 @@ fn create_reader(
         // plugin chain for every file opened — DLLs and threads bought for a
         // capture pipeline this program does not have.
         attributes.SetUINT32(&MF_SOURCE_READER_DISABLE_CAMERA_PLUGINS, 1)?;
+
+        // Low latency, which for a wallpaper is not about latency at all: it
+        // tells the decoder not to build up the queue of decoded frames it
+        // would keep for smooth seeking and playback of a film. Measured on a
+        // 4K clip across two adapters, that queue is worth about 70 MB of
+        // working set and 85 MB of private bytes — see docs/decisions.md.
+        //
+        // The risk this carries is real and is the reason it was left alone
+        // for so long: some decoders stop reordering B-frames back into
+        // presentation order in this mode, and the result is playback that
+        // is subtly, unfixably jerky with nothing reporting an error. So the
+        // reader thread now watches the timestamps it is handed, and says so
+        // if they ever arrive out of order. Nothing has tripped it here; a
+        // report that it has is a reason to take this line back out.
+        attributes.SetUINT32(&MF_LOW_LATENCY, 1)?;
 
         if processing {
             attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)?;

@@ -11,13 +11,16 @@ project_overview.md bölümüne referans.
 
 ## Şimdi (aktif faz)
 
-- [ ] **RAM/thread düşürme — ölçüm gerekiyor.** ~265 MB ve 75 thread hâlâ
-      hedefin üstünde. İki şey denendi ve girdi (bkz. decisions.md):
-      `MF_SOURCE_READER_DISABLE_CAMERA_PLUGINS`, ve processor'ın yalnız
-      gerekince kurulması. **Kazancın ne olduğu henüz ölçülmedi** — sıradaki
-      iş `--caps` ve Görev Yöneticisi ile önce/sonra sayısını almak.
-      Denenmemiş kalanlar: buffer sayısını sınırlama, `MF_LOW_LATENCY`
-      (dikkat: B-frame yeniden sıralamasını bozabilir, önce test).
+- [ ] **RAM: kolay kazançlar bitti, kalan mimari.** Ölçüldü (tablo
+      decisions.md 2026-08-27'de): en kötü hâlde (4K, iki adapter) 790 →
+      706 MB private, `MF_LOW_LATENCY` sayesinde. Havuz öznitelikleri
+      denendi, hiçbir şey yapmıyor — taban belirliyorlar, tavan değil.
+      Kalan ~700 MB'ın neredeyse tamamı iki decoder'ın DPB'si; 80 thread
+      MF'in paylaşılan iş kuyruğu. İkisi de ayrı bir tasarım işi:
+      - [ ] Asenkron `IMFSourceReaderCallback`'e geçmenin thread sayısına
+            etkisini ölç (şu an `ReadSample` senkron + kendi thread'imiz)
+      - [ ] Tek adapter'da iki monitör varken gerçekten tek decoder mı
+            çalışıyor, ölçümle doğrula (kod öyle diyor, sayı görülmedi)
 
 ## Sırada (henüz başlanmadı)
 

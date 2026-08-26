@@ -30,8 +30,11 @@
 //!   hotkeys <on|off>          -> `ok`
 //!   freeze <on|off|toggle>    -> `ok`   (the last frame stays on screen)
 //!   own <monitor> <fit|-> <fps> <bright|-> <sat> <blur> -> `ok`
-//!                                (`-` in a slot means "follow the desktop";
-//!                                 fps 0 means the same)
+//!                                ("follow the desktop" is `-` in a slot,
+//!                                 0 for the frame rate, and either `-` or a
+//!                                 negative number for the brightness —
+//!                                 the status line and the session file both
+//!                                 need a number in that slot)
 //!   quit                      -> `ok`, then the engine shuts down
 //!
 //! Anything unrecognised gets `err unknown command`.
@@ -580,63 +583,80 @@ fn handle(
         // Six fields in one message rather than one command per setting: the
         // UI edits them on one panel and sends the panel, which means a
         // monitor can never end up half-overridden.
-        "own" => {
-            let parts: Vec<&str> = rest.split(' ').collect();
-            let [monitor, fit, fps, brightness, saturation, blur] = parts[..] else {
-                return "err usage: own <monitor> <fit|-> <fps> <bright|-> <sat> <blur>\n"
-                    .to_string();
-            };
-
-            let fit = match fit {
-                "-" => None,
-                name => match Fit::parse(name) {
-                    Some(fit) => Some(fit),
-                    None => return "err fit must be cover, contain, stretch or -\n".to_string(),
-                },
-            };
-
-            let fps = match fps.parse::<u32>() {
-                Ok(0) => None,
-                Ok(n) if n <= 240 => Some(n),
-                _ => return "err fps must be 0 (follow the desktop) or 1-240\n".to_string(),
-            };
-
-            let visual = if brightness == "-" {
-                None
-            } else {
-                let numbers: Vec<f32> = [brightness, saturation, blur]
-                    .iter()
-                    .filter_map(|n| n.parse().ok())
-                    .collect();
-                let [brightness, saturation, blur] = numbers[..] else {
-                    return "err brightness, saturation and blur must be numbers\n".to_string();
-                };
-                if !(0.0..=2.0).contains(&brightness)
-                    || !(0.0..=2.0).contains(&saturation)
-                    || !(0.0..=1.0).contains(&blur)
-                {
-                    return "err brightness and saturation are 0-2, blur is 0-1\n".to_string();
-                }
-                Some(Visual {
-                    brightness,
-                    saturation,
-                    blur,
-                })
-            };
-
-            send(
-                commands,
-                Command::SetOverrides {
-                    monitor: monitor.to_string(),
-                    overrides: Overrides { fit, visual, fps },
-                },
-            )
-        }
+        "own" => match parse_overrides(rest) {
+            Ok((monitor, overrides)) => {
+                send(commands, Command::SetOverrides { monitor, overrides })
+            }
+            Err(message) => format!("err {message}\n"),
+        },
 
         "quit" => send(commands, Command::Quit),
 
         _ => "err unknown command\n".to_string(),
     }
+}
+
+/// `<monitor> <fit|-> <fps> <brightness|-> <saturation> <blur>`.
+///
+/// Its own function because it is the one message with six fields, three
+/// spellings of "leave this one alone", and no hardware anywhere near it —
+/// which makes it the one message worth testing directly.
+fn parse_overrides(rest: &str) -> Result<(String, Overrides), &'static str> {
+    let parts: Vec<&str> = rest.split(' ').collect();
+    let [monitor, fit, fps, brightness, saturation, blur] = parts[..] else {
+        return Err("usage: own <monitor> <fit|-> <fps> <bright|-> <sat> <blur>");
+    };
+
+    let fit = match fit {
+        "-" => None,
+        name => match Fit::parse(name) {
+            Some(fit) => Some(fit),
+            None => return Err("fit must be cover, contain, stretch or -"),
+        },
+    };
+
+    let fps = match fps.parse::<u32>() {
+        Ok(0) => None,
+        Ok(n) if n <= 240 => Some(n),
+        _ => return Err("fps must be 0 (follow the desktop) or 1-240"),
+    };
+
+    // Two spellings of "this screen has no grade of its own": `-`, which is
+    // what a person types, and a negative brightness, which is what the
+    // status line and the session file write because they need a number in
+    // the slot. Both have to be accepted — the UI sends the second one, and
+    // rejecting it meant the button that hands a monitor back to the
+    // desktop's settings quietly did nothing.
+    let clearing = brightness == "-"
+        || brightness
+            .parse::<f32>()
+            .map(|value| value < 0.0)
+            .unwrap_or(false);
+
+    let visual = if clearing {
+        None
+    } else {
+        let numbers: Vec<f32> = [brightness, saturation, blur]
+            .iter()
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        let [brightness, saturation, blur] = numbers[..] else {
+            return Err("brightness, saturation and blur must be numbers");
+        };
+        if !(0.0..=2.0).contains(&brightness)
+            || !(0.0..=2.0).contains(&saturation)
+            || !(0.0..=1.0).contains(&blur)
+        {
+            return Err("brightness and saturation are 0-2, blur is 0-1");
+        }
+        Some(Visual {
+            brightness,
+            saturation,
+            blur,
+        })
+    };
+
+    Ok((monitor.to_string(), Overrides { fit, visual, fps }))
 }
 
 fn send(commands: &Sender<Command>, command: Command) -> String {
@@ -677,5 +697,63 @@ impl Write for Pipe {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_monitor_can_be_given_settings_of_its_own() {
+        let (name, own) = parse_overrides(r"\.\DISPLAY1 contain 10 0.600 1.000 0.250").unwrap();
+
+        assert_eq!(name, r"\.\DISPLAY1");
+        assert_eq!(own.fit, Some(Fit::Contain));
+        assert_eq!(own.fps, Some(10));
+        assert_eq!(own.visual.unwrap().brightness, 0.6);
+        assert_eq!(own.visual.unwrap().blur, 0.25);
+    }
+
+    /// The bug this guards: the panel writes a negative brightness to mean
+    /// "no grade of its own" — the same spelling the status line and the
+    /// session file use — and only `-` was accepted. The button that handed
+    /// a monitor back to the desktop's settings answered `err` and did
+    /// nothing, on a screen where nothing looked wrong.
+    #[test]
+    fn both_spellings_of_no_grade_are_accepted() {
+        for line in [r"\.\DISPLAY1 - 0 - 1 0", r"\.\DISPLAY1 - 0 -1 1 0"] {
+            let (_, own) = parse_overrides(line).unwrap_or_else(|e| panic!("{line:?}: {e}"));
+            assert_eq!(own.visual, None, "{line:?}");
+            assert_eq!(own.fit, None, "{line:?}");
+            assert_eq!(own.fps, None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_screen_may_differ_in_one_thing_only() {
+        let (_, own) = parse_overrides(r"\.\DISPLAY2 - 15 - 1 0").unwrap();
+        assert_eq!(own.fps, Some(15));
+        assert_eq!(own.fit, None);
+        assert_eq!(own.visual, None);
+    }
+
+    #[test]
+    fn nonsense_is_refused_rather_than_guessed_at() {
+        assert!(parse_overrides(r"\.\DISPLAY1 sideways 10 1 1 0").is_err());
+        assert!(parse_overrides(r"\.\DISPLAY1 cover 999 1 1 0").is_err());
+        // Brightness above the range the shader was built for.
+        assert!(parse_overrides(r"\.\DISPLAY1 cover 0 9 1 0").is_err());
+        // Too few fields.
+        assert!(parse_overrides(r"\.\DISPLAY1 cover 0").is_err());
+    }
+
+    /// Zero is how the frame rate says "follow the desktop"; it must never
+    /// come back as a cap of zero, which would stop the monitor presenting
+    /// at all.
+    #[test]
+    fn a_frame_rate_of_zero_means_follow_the_desktop() {
+        let (_, own) = parse_overrides(r"\.\DISPLAY1 cover 0 1 1 0").unwrap();
+        assert_eq!(own.fps, None);
     }
 }
