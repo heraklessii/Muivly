@@ -1,0 +1,51 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Muivly is early. If the wallpaper does not display at all, that is
+        expected — the engine is not finished yet. See the README.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: caps
+    attributes:
+      label: Hardware profile
+      description: >
+        Output of `muivly-core --caps`. This is the single most useful thing
+        in a Muivly bug report — GPU behaviour varies a lot and most bugs here
+        are hardware-specific. It contains no personal data.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: "Settings > System > About, e.g. Windows 11 24H2 (26100.2314)"
+    validations:
+      required: true
+
+  - type: input
+    id: video
+    attributes:
+      label: Video file (if relevant)
+      description: >
+        Container and codec, e.g. "mp4, H.264 1080p60" or "webm, VP9".
+        Hardware decode support differs by both.
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, other running software, multi-monitor layout.

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    # Muivly is Win32 all the way down (DXGI, D3D11, WorkerW). There is
+    # nothing meaningful to check on another OS.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --all
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Probe runs
+        # Smoke test: the capability probe must survive on the runner's
+        # virtual display adapter, which is exactly the "no hardware decoder"
+        # path real users on old machines can hit.
+        run: cargo run --release -- --caps

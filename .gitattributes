@@ -1,0 +1,9 @@
+# Normalize to LF in the repository; Git checks out CRLF on Windows.
+# Without this, contributors on different platforms produce whitespace-only
+# diffs on every file they touch.
+* text=auto eol=lf
+
+*.png binary
+*.woff2 binary
+*.exe binary
+*.mp4 binary

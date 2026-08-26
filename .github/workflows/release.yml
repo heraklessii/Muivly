@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Lets a release be rehearsed without tagging.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $env:GITHUB_REF -replace '^refs/tags/v', ''
+          } else {
+            'dev'
+          }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          $staging = "Muivly-$version-portable"
+          New-Item -ItemType Directory $staging | Out-Null
+          Copy-Item target\release\muivly-core.exe $staging
+          Copy-Item LICENSE, README.md $staging
+          Compress-Archive -Path $staging -DestinationPath "$staging.zip"
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $zip = "Muivly-$env:VERSION-portable.zip"
+          (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() + "  $zip" |
+            Out-File "$zip.sha256" -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable
+          path: |
+            Muivly-*-portable.zip
+            Muivly-*-portable.zip.sha256
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            Muivly-*-portable.zip
+            Muivly-*-portable.zip.sha256
+
+# The installer (Muivly-x.y.z-setup.exe) is not built here yet — it needs the
+# Tauri UI, which does not exist. When it does, it gets its own job in this
+# workflow rather than a separate one, so both artifacts come from the same
+# commit and land in the same release.

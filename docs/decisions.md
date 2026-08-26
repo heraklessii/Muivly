@@ -1,0 +1,173 @@
+# Decisions
+
+Amaç: "Neden X değil de Y yaptık" sorusunun cevabı burada. Yeni bir mimari
+öneri gelmeden veya mevcut bir yaklaşımı sorgulamadan önce oku — daha önce
+elenmiş bir yolu tekrar önermemek/tartışmamak için.
+
+Format: her karar kısa. Tarih, karar, gerekçe, alternatif (varsa neden elendi).
+Eskimiş/geçersiz olan kararı SİLME, "GEÇERSİZ:" ile işaretle ve neden
+değiştiğini yaz — geçmiş bağlamı kaybetmemek için.
+
+---
+
+## 2026-08-26 — Render motoru: wgpu/native D3D11, Tauri WebView değil
+
+**Karar:** Wallpaper render'ı Tauri'nin WebView'i (WRY) üzerinden değil,
+bağımsız bir Rust binary içinde native D3D11/wgpu ile yapılacak.
+
+**Gerekçe:** Hedef kitle düşük donanım kullanıcıları. WebView/CEF tabanlı
+render (Electron veya WE'nin bazı web wallpaper'ları gibi) sürekli ekstra
+RAM yer. Native render bu maliyeti ortadan kaldırıyor.
+
+**Alternatif (elendi):** Tüm uygulamayı Tauri WebView içinde canvas/video
+tag ile render etmek. Daha basit olurdu ama RAM hedefiyle çelişiyor.
+
+---
+
+## 2026-08-26 — İki process ayrımı: core (native) + ui (Tauri)
+
+**Karar:** Wallpaper motoru ve ayar paneli tamamen ayrı process'ler, IPC
+(named pipe) ile haberleşir.
+
+**Gerekçe:** UI kapatılsa/açılsa bile wallpaper render'ının bellek profili
+sabit kalsın istiyoruz. WebView maliyeti sadece ayarlar açıkken ödensin.
+
+**Alternatif (elendi):** Tek process içinde her şeyi yönetmek. Daha az IPC
+karmaşıklığı olurdu ama UI açıkken RAM artışı wallpaper'ı da etkiler,
+"hafiflik" iddiasını zayıflatır.
+
+---
+
+## 2026-08-26 — Video decode: Media Foundation + D3D11VA, ffmpeg değil
+
+**Karar:** Video decode tamamen Windows Media Foundation üzerinden,
+hardware-accelerated (D3D11VA). ffmpeg/libav'a decode için bağımlılık yok.
+
+**Gerekçe:** Zero-copy pipeline (GPU'da decode edilen frame CPU'ya
+dönmeden direkt texture olarak kullanılır) hem RAM hem CPU tasarrufu
+sağlıyor. ffmpeg genelde CPU decode'a düşer veya ekstra bağımlılık/binary
+boyutu getirir.
+
+**Alternatif (kısmi/olası istisna):** ffmpeg sadece container demux için
+kullanılabilir (MF'in desteklemediği formatlarda), decode adımı yine
+D3D11VA'da kalır. Bu tamamen kapanmış bir kapı değil, gerekirse tekrar
+değerlendirilebilir.
+
+---
+
+## 2026-08-26 — Multi-monitor: paylaşılan texture, monitör başına decode değil
+
+**Karar:** Aynı video birden fazla monitörde oynuyorsa tek decode yapılır,
+`IDXGIResource` ile texture tüm WorkerW instance'larına paylaşılır.
+
+**Gerekçe:** Monitör başına ayrı decode, kaynak kullanımını monitör
+sayısıyla doğru orantılı büyütür — hafiflik hedefiyle doğrudan çelişir.
+
+---
+
+## 2026-08-26 — Hedef kitle: düşük donanım kullanıcıları (ilk faz)
+
+**Karar:** İlk pazarlama/ürün odağı "eski PC / entegre GPU / 8GB RAM altı"
+kullanıcı kitlesi. Geliştirici/açık kaynak ve "sade video kullanıcısı"
+kitleleri ikinci öncelik.
+
+**Gerekçe:** WE'nin bu kitlede bilinen zayıflığı var (RAM/CPU şikayetleri).
+Ölçülebilir, kanıtlanabilir bir fark burada daha kolay gösterilebilir
+(bkz. worklog'da ileride eklenecek benchmark girdileri).
+
+**Not:** Bu karar tüm mimari önceliklerini etkiler — "çalışır" yeterli
+değil, "düşük donanımda akıcı çalışır" bar'ı esas alınmalı.
+---
+
+## 2026-08-26 — Wallpaper, çıkışın sahibi olan adapter'da çalışır
+
+**Karar:** Hibrit sistemde (iGPU + dGPU) render, monitörün fiziksel olarak
+bağlı olduğu adapter'da yapılır. `IDXGIFactory6::EnumAdapterByGpuPreference`
+`MINIMUM_POWER` ile sıralanır, `IDXGIAdapter::EnumOutputs` ile eşleme çıkarılır.
+
+**Gerekçe:** Laptop'ta dGPU'yu wallpaper için uyanık tutmak pil ömrünü yakar.
+Ayrıca çıkışlar iGPU'daysa dGPU'da render cross-adapter kopya doğurur ve
+zero-copy kuralını bozar.
+
+**Alternatif (elendi):** `HIGH_PERFORMANCE` ile en güçlü GPU'yu seçmek.
+Oyun mantığı; arka planda sürekli çalışan bir wallpaper için yanlış.
+
+---
+
+## 2026-08-26 — Cross-adapter: adapter başına bir decode
+
+**Karar:** "Monitör başına ayrı decode YASAK" kuralı duruyor, ama monitörler
+farklı GPU'lara bağlıysa **adapter başına bir decode** yapılır. Bu, kuralın
+yazılı istisnası.
+
+**Gerekçe:** Cross-adapter paylaşılan texture
+(`D3D11_RESOURCE_MISC_SHARED_CROSS_ADAPTER`) sistem belleği üzerinden kopya
+gerektiriyor — zero-copy kuralını doğrudan bozar. İki adapter'da iki decode,
+her frame'i RAM'e indirip geri yüklemekten ucuz.
+
+**Kapsam:** Tek adapter durumunda (yaygın hâl) hiçbir şey değişmez: tek decode,
+`IDXGIResource` ile paylaşılan texture.
+
+---
+
+## 2026-08-26 — HW decode yoksa: statik ilk frame
+
+**Karar:** Video codec'inin donanım decode desteği yoksa video oynatılmaz;
+ilk frame statik gösterilir ve UI'da neden bildirilir.
+
+**Gerekçe:** CPU decode yasak (RAM/CPU bütçesi). Sessizce hiçbir şey
+göstermemek kullanıcıya "bozuk" hissi verir; statik frame en azından seçilen
+wallpaper'ı gösterir ve sorunun ne olduğu UI'dan okunur.
+
+**Alternatif (elendi):** Wallpaper'ı hiç yüklememek. Daha net ama kullanıcı
+neyi seçtiğini göremiyor.
+
+---
+
+## 2026-08-26 — `caps/` ayrı modül
+
+**Karar:** GPU capability detection `wallpaper-core/src/caps/` altında ayrı
+bir modül. Core başlangıcında bir kez probe edilir, `Arc<GpuProfile>` olarak
+decoder/power/compositor'a geçirilir.
+
+**Gerekçe:** Hem `decoder/` (codec desteği) hem `power/` (fps politikası)
+bu bilgiye ihtiyaç duyuyor. `power/` altına koymak `decoder → power`
+bağımlılığı doğururdu; bu ters yönlü bir bağımlılık.
+
+**Detay:** `docs/gpu_capability.md`
+
+---
+
+## 2026-08-26 — Arayüz teması: ortak Mui tasarım sistemi
+
+**Karar:** wallpaper-ui, Muita ve Muitoon ile aynı paleti ve fontu kullanır:
+teal `#2dd4bf` vurgu, `#0f1115` zemin, Outfit variable font (yerele gömülü).
+Jeton isimlendirmesi Muita'nınkiyle aynı (`--bg-panel`, `--text`, ...).
+
+**Gerekçe:** Üçü de İlker'in ürünü; ortak kimlik. Muita bir masaüstü
+uygulaması olduğu için jeton şeması Muivly'ye daha yakın.
+
+**Detay:** `docs/design_system.md`
+
+---
+
+## 2026-08-26 — Açık kaynak, Apache-2.0
+
+**Karar:** Muivly `heraklessii/Muivly` altında açık kaynak, lisans
+**Apache-2.0**. Dağıtım GitHub Releases üzerinden (portable zip + ileride
+installer).
+
+**Gerekçe:** İlker ileride Steam'de yayınlama ihtimalini açık tutmak istiyor.
+Bu GPL'i eliyor: Steamworks SDK tescilli, GPL koduna linklenemez; ayrıca
+dışarıdan gelen GPL katkılar ticari bir sürümü bloklardı. Apache-2.0 izin
+verici, §5 sayesinde katkılar otomatik aynı lisansla geliyor (katkıcılardan
+tek tek izin istemeye gerek kalmıyor) ve MIT'te olmayan patent koruması var.
+
+**Alternatifler (elendi):**
+- **GPL-3.0**: kapalı fork'u engellerdi ama Steam yolunu kapatıyor.
+- **MIT**: Apache ile aynı serbestlik, patent koruması ve açık katkı şartı yok.
+- **MPL-2.0**: dosya bazlı copyleft; Steam için Apache'ten bir avantajı yok,
+  karşılığında karmaşıklık getiriyor.
+
+**Not:** İlker telif sahibi olduğu için kendi kodunu istediği lisansla ayrıca
+dağıtabilir; bu lisans dışarıdan gelen katkılar için önemli.

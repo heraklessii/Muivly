@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["wallpaper-core"]
+
+[profile.release]
+# Binary size matters: this ships to users on old machines.
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest something Muivly should do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before suggesting: Muivly deliberately trades features for weight.
+        `docs/decisions.md` lists what has already been considered and turned
+        down, and why. Worth a look first.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: The situation you are in, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+    validations:
+      required: true
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: What would it cost
+      description: >
+        Muivly's whole point is running light on weak machines. If your idea
+        costs RAM, CPU or GPU time while a wallpaper is playing, say so — it
+        can still be worth it, but it has to be worth it on purpose.
