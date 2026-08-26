@@ -24,9 +24,19 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use windows::core::{w, BOOL};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowExW, FindWindowW, GetWindowRect, IsWindowVisible, SendMessageTimeoutW,
-    SMTO_NORMAL,
+    EnumWindows, FindWindowExW, FindWindowW, GetWindowRect, IsWindow, IsWindowVisible,
+    SendMessageTimeoutW, SMTO_NORMAL,
 };
+
+/// Whether the window the wallpaper is parented to still exists.
+///
+/// Explorer restarting — after a crash, or after the user kills it — takes
+/// WorkerW with it and leaves every surface parented to a handle that is
+/// gone. The wallpaper vanishes and nothing reports an error, because
+/// nothing failed: the windows are simply orphans. Checking is one call.
+pub fn is_alive(hwnd: HWND) -> bool {
+    unsafe { IsWindow(Some(hwnd)).as_bool() }
+}
 
 /// The undocumented message that asks Progman to split the desktop into an
 /// icon window and a wallpaper window.

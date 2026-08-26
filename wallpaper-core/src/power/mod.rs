@@ -1,6 +1,11 @@
-//! Deciding when a monitor is not worth drawing to.
+//! Deciding when a monitor is not worth drawing to, and when the machine
+//! cannot afford to draw at all.
 //!
-//! Two signals, because neither is sufficient on its own:
+//! Coverage is here in `mod.rs`; the power source and what to do about it is
+//! in `battery.rs`. They answer the same question from two directions — is
+//! this frame worth what it costs — which is why they live together.
+//!
+//! Coverage, in two signals, because neither is sufficient on its own:
 //!
 //! - **DXGI occlusion** (handled in `compositor::render`): the driver tells
 //!   us a swap chain is fully covered. Accurate when it fires, but it does
@@ -13,6 +18,8 @@
 //! at a time, so on a second monitor a maximised window that does not have
 //! focus would be missed and that monitor would keep rendering into nothing.
 //! So every top-level window is examined.
+
+pub mod battery;
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};

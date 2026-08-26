@@ -2,12 +2,13 @@
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, RegisterClassW, HCURSOR,
-    HICON, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, RegisterClassW, ShowWindow,
+    HCURSOR, HICON, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOWNA, WNDCLASSW, WS_CHILD,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
 use crate::caps::MonitorInfo;
@@ -15,8 +16,13 @@ use crate::caps::MonitorInfo;
 const CLASS_NAME: PCWSTR = w!("MuivlySurface");
 
 /// A window covering exactly one monitor, living behind the desktop icons.
+///
+/// Created hidden. A monitor only gets ours in front of the desktop once it
+/// has something to play; until then Windows' own wallpaper is what should be
+/// on screen.
 pub struct Surface {
     pub hwnd: HWND,
+    parent: HWND,
     pub monitor: MonitorInfo,
 }
 
@@ -44,7 +50,7 @@ impl Surface {
                 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
                 CLASS_NAME,
                 w!("Muivly"),
-                WS_CHILD | WS_VISIBLE,
+                WS_CHILD,
                 monitor.x - vx,
                 monitor.y - vy,
                 monitor.width as i32,
@@ -58,8 +64,24 @@ impl Surface {
 
         Ok(Self {
             hwnd,
+            parent,
             monitor: monitor.clone(),
         })
+    }
+
+    /// Put the surface in front of the desktop, or take it away.
+    ///
+    /// Hiding uncovers whatever the shell painted underneath. WorkerW does
+    /// not always notice on its own, so the exposed area is invalidated —
+    /// without that the last frame stays on screen and the monitor looks like
+    /// it never turned off.
+    pub fn set_visible(&self, visible: bool) {
+        unsafe {
+            let _ = ShowWindow(self.hwnd, if visible { SW_SHOWNA } else { SW_HIDE });
+            if !visible {
+                let _ = InvalidateRect(Some(self.parent), None, true);
+            }
+        }
     }
 }
 

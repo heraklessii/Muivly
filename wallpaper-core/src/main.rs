@@ -1,17 +1,21 @@
 // wallpaper-core — the Muivly wallpaper engine. Runs as an independent
 // background service; the settings UI (wallpaper-ui) is a separate process.
 
+mod audio;
 mod caps;
 mod compositor;
 mod decoder;
 mod ipc;
 mod power;
+mod session;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use windows::core::BOOL;
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
+use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -23,8 +27,9 @@ USAGE:
     muivly-core [OPTIONS] [VIDEO]
 
 ARGS:
-    <VIDEO>      Video file to play as the wallpaper. Without one, a
-                 placeholder gradient is shown.
+    <VIDEO>      Video file to play as the wallpaper. Without one, the
+                 engine idles and the desktop keeps its Windows wallpaper
+                 until the settings app assigns something.
 
 OPTIONS:
     --caps       Print the detected hardware profile and exit.
@@ -67,6 +72,15 @@ fn run(video: Option<PathBuf>) {
         }
     }
 
+    // A second engine would render a second wallpaper into the same WorkerW,
+    // decode the same video again, and answer to a name only one of them can
+    // be reached at — so a later "quit" stops one and leaves the other
+    // running. One per session, and the extra launch is a no-op.
+    if !claim_single_instance() {
+        println!("muivly-core is already running");
+        return;
+    }
+
     let profile = caps::probe();
     print!("{}", profile.summary());
 
@@ -106,4 +120,31 @@ fn run(video: Option<PathBuf>) {
 unsafe extern "system" fn ctrl_handler(_: u32) -> BOOL {
     compositor::stop();
     true.into()
+}
+
+/// Take the one-engine-per-session claim, or report that someone else has it.
+///
+/// A named mutex is the cheapest lock Windows offers for this and it is
+/// released by the kernel however the process ends, including a crash — a
+/// lock file would need cleaning up after one. `Local\` scopes it to the
+/// logon session, which is the right scope: two users logged in at once each
+/// have their own desktop and each should get their own wallpaper.
+fn claim_single_instance() -> bool {
+    unsafe {
+        let name = windows::core::w!(r"Local\muivly-core");
+        let Ok(handle) = CreateMutexW(None, true, name) else {
+            // Without an answer, running is the better guess: refusing to
+            // start would be the worse failure of the two.
+            return true;
+        };
+
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = CloseHandle(handle);
+            return false;
+        }
+
+        // Deliberately never closed. The handle is the claim, and it has to
+        // outlive everything else in the process.
+        true
+    }
 }

@@ -6,9 +6,13 @@
 //! further, that trade flips — see docs/decisions.md.
 //!
 //! Requests:
-//!   status                    -> `ok fps=<n> paused=<b> fit=<name> interval=<s>`,
-//!                                then one `monitor <name> <enabled> <index> <path>|...`
-//!                                line per display, then `end`
+//!   status                    -> `ok <key>=<value> ...`, then one
+//!                                `monitor <name> <enabled> <index> <path>|...`
+//!                                line per display, then one
+//!                                `own <name> <fit> <fps> <bright> <sat> <blur>`
+//!                                line per display with settings of its own,
+//!                                then an optional `error <message>` line,
+//!                                then `end`
 //!   monitors                  -> one `monitor <name> <x> <y> <w> <h> <hz> <primary> <adapter>`
 //!                                line per display, then `end`
 //!   set <monitor> <path>|...  -> `ok`   (empty list clears; `|` separates a playlist)
@@ -17,6 +21,17 @@
 //!   fps <n>                   -> `ok`
 //!   fit <cover|contain|stretch> -> `ok`
 //!   interval <seconds>        -> `ok`   (0 = advance when the clip ends)
+//!   visual <bright> <sat> <blur> -> `ok`
+//!   sound <on|off> <volume> <duck> -> `ok`
+//!   power <battery_fps> <freeze_on_saver> -> `ok`  (fps 0 = no separate rate)
+//!   speed <rate>              -> `ok`   (0.25-2.0)
+//!   fade <milliseconds>       -> `ok`   (0 = cut)
+//!   span <on|off>             -> `ok`   (one wallpaper across every screen)
+//!   hotkeys <on|off>          -> `ok`
+//!   freeze <on|off|toggle>    -> `ok`   (the last frame stays on screen)
+//!   own <monitor> <fit|-> <fps> <bright|-> <sat> <blur> -> `ok`
+//!                                (`-` in a slot means "follow the desktop";
+//!                                 fps 0 means the same)
 //!   quit                      -> `ok`, then the engine shuts down
 //!
 //! Anything unrecognised gets `err unknown command`.
@@ -28,17 +43,19 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX};
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
 use crate::caps::GpuProfile;
-use crate::compositor::Fit;
+use crate::compositor::{Fit, Overrides, Sound, Visual};
+use crate::power::battery::PowerPolicy;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\muivly";
 
@@ -61,6 +78,25 @@ pub enum Command {
     Fps(u32),
     SetFit(Fit),
     Interval(u64),
+    SetVisual(Visual),
+    SetSound(Sound),
+    /// What to do about running on a battery.
+    SetPower(PowerPolicy),
+    /// Playback rate, 1.0 being the speed the file was authored at.
+    SetSpeed(f32),
+    /// How long one wallpaper takes to replace another.
+    SetFade(Duration),
+    /// One wallpaper stretched across every screen.
+    SetSpan(bool),
+    SetHotkeys(bool),
+    /// Settings one monitor keeps for itself. The default value hands it
+    /// back to the desktop's.
+    SetOverrides {
+        monitor: String,
+        overrides: Overrides,
+    },
+    /// Stop everything moving without taking the wallpaper away.
+    Freeze(bool),
     Quit,
 }
 
@@ -70,6 +106,8 @@ pub struct MonitorState {
     pub enabled: bool,
     pub index: usize,
     pub items: Vec<PathBuf>,
+    /// What this screen has chosen not to share with the others.
+    pub overrides: Overrides,
 }
 
 /// What the engine tells the UI about itself.
@@ -77,8 +115,39 @@ pub struct MonitorState {
 pub struct Status {
     pub fps: u32,
     pub paused: bool,
+    /// Stopped on purpose, rather than because nothing is visible.
+    pub frozen: bool,
     pub fit: String,
     pub interval_secs: u64,
+    pub brightness: f32,
+    pub saturation: f32,
+    pub blur: f32,
+    pub sound: bool,
+    pub volume: f32,
+    /// Whether the soundtrack stands down for other applications...
+    pub duck: bool,
+    /// ...and whether it is doing so right now.
+    pub ducking: bool,
+    pub speed: f32,
+    pub fade_ms: u64,
+    pub span: bool,
+    pub hotkeys: bool,
+    /// The frame rate cap while unplugged; 0 means the same as plugged in.
+    pub battery_fps: u32,
+    pub pause_on_saver: bool,
+    /// What the machine is actually running on at the moment.
+    pub on_battery: bool,
+    pub saver: bool,
+    pub battery_percent: u8,
+    /// Share of one core, 0-100, measured by the engine about once a second.
+    pub cpu: f32,
+    pub ram_mb: u32,
+    /// Frames actually presented per second, which is not the target fps:
+    /// a 24 fps clip on a 60 fps setting presents 24 times.
+    pub real_fps: f32,
+    /// The last thing that went wrong, in words meant for the user. Sent on
+    /// its own line because a message contains spaces.
+    pub error: Option<String>,
     pub monitors: Vec<MonitorState>,
 }
 
@@ -87,29 +156,73 @@ impl Default for Status {
         Self {
             fps: 0,
             paused: false,
+            frozen: false,
             fit: Fit::default().name().to_string(),
             interval_secs: 0,
+            brightness: 1.0,
+            saturation: 1.0,
+            blur: 0.0,
+            sound: false,
+            volume: 0.5,
+            duck: true,
+            ducking: false,
+            speed: 1.0,
+            fade_ms: 400,
+            span: false,
+            hotkeys: true,
+            battery_fps: 24,
+            pause_on_saver: true,
+            on_battery: false,
+            saver: false,
+            battery_percent: 100,
+            cpu: 0.0,
+            ram_mb: 0,
+            real_fps: 0.0,
+            error: None,
             monitors: Vec::new(),
         }
     }
 }
 
-/// Start serving on a background thread. Returns immediately.
+/// How many pipe instances listen at once.
+///
+/// One was a race the UI lost regularly. The client opens a fresh connection
+/// per request and polls status on a timer, so a request the user triggers
+/// lands on top of a poll often enough to notice — and with a single
+/// instance the second one gets `ERROR_PIPE_BUSY`, which the UI can only
+/// read as "the engine is not running". The same hole is open in the instant
+/// between one conversation ending and the next instance being created.
+///
+/// Two spare listeners close both. They are created once and reused for the
+/// life of the process — a thread per connection would be cheaper to write
+/// and a thread created every 1.5 seconds forever to answer a poll.
+const INSTANCES: usize = 3;
+
+/// Start serving on background threads. Returns immediately.
 pub fn serve(profile: GpuProfile, status: Arc<Mutex<Status>>, commands: Sender<Command>) {
-    std::thread::spawn(move || {
-        loop {
-            match accept_one(&profile, &status, &commands) {
-                // The client disconnected. Loop straight back into accepting:
-                // the UI opens a fresh connection per request, and any pause
-                // here is a window in which it finds no pipe at all.
-                Ok(()) => {}
-                Err(e) => {
-                    eprintln!("ipc: {e}");
-                    std::thread::sleep(std::time::Duration::from_millis(200));
+    let profile = Arc::new(profile);
+
+    for i in 0..INSTANCES {
+        let profile = Arc::clone(&profile);
+        let status = Arc::clone(&status);
+        let commands = commands.clone();
+
+        let _ = std::thread::Builder::new()
+            .name(format!("muivly-ipc-{i}"))
+            .spawn(move || {
+                loop {
+                    match accept_one(&profile, &status, &commands) {
+                        // The client disconnected. Loop straight back into
+                        // accepting; the other instances covered the gap.
+                        Ok(()) => {}
+                        Err(e) => {
+                            eprintln!("ipc: {e}");
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                        }
+                    }
                 }
-            }
-        }
-    });
+            });
+    }
 }
 
 fn accept_one(
@@ -123,7 +236,12 @@ fn accept_one(
         CreateNamedPipeW(
             PCWSTR(name.as_ptr()),
             PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            // REJECT_REMOTE_CLIENTS is the important one. A named pipe is
+            // reachable over SMB as `\\<machine>\pipe\muivly` unless it says
+            // otherwise, which would put "change this desktop's wallpaper,
+            // and tell me which files it points at" on the network. Nothing
+            // about this protocol is meant to leave the machine.
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
             8192,
             8192,
@@ -191,8 +309,35 @@ fn handle(
         "status" => {
             let status = status.lock().expect("status mutex poisoned");
             let mut out = format!(
-                "ok fps={} paused={} fit={} interval={}\n",
-                status.fps, status.paused, status.fit, status.interval_secs
+                "ok fps={} paused={} frozen={} fit={} interval={} brightness={:.3} \
+                 saturation={:.3} blur={:.3} sound={} volume={:.3} duck={} \
+                 ducking={} speed={:.2} fade={} span={} hotkeys={} batfps={} \
+                 batfreeze={} battery={} saver={} charge={} cpu={:.1} \
+                 ram={} realfps={:.1}\n",
+                status.fps,
+                status.paused,
+                status.frozen,
+                status.fit,
+                status.interval_secs,
+                status.brightness,
+                status.saturation,
+                status.blur,
+                status.sound,
+                status.volume,
+                status.duck,
+                status.ducking,
+                status.speed,
+                status.fade_ms,
+                status.span,
+                status.hotkeys,
+                status.battery_fps,
+                status.pause_on_saver,
+                status.on_battery,
+                status.saver,
+                status.battery_percent,
+                status.cpu,
+                status.ram_mb,
+                status.real_fps,
             );
 
             for monitor in &status.monitors {
@@ -208,6 +353,34 @@ fn handle(
                     monitor.index,
                     items.join("|")
                 ));
+            }
+
+            // Only the monitors that differ from the desktop get a line: on
+            // the machines this project is for there is usually one screen
+            // and none of this is ever sent.
+            for monitor in &status.monitors {
+                let own = monitor.overrides;
+                if own == Overrides::default() {
+                    continue;
+                }
+                let visual = own.visual.unwrap_or_default();
+                out.push_str(&format!(
+                    "own {} {} {} {:.3} {:.3} {:.3}\n",
+                    monitor.device_name,
+                    own.fit.map(|f| f.name()).unwrap_or("-"),
+                    own.fps.unwrap_or(0),
+                    if own.visual.is_some() {
+                        visual.brightness
+                    } else {
+                        -1.0
+                    },
+                    visual.saturation,
+                    visual.blur,
+                ));
+            }
+
+            if let Some(message) = &status.error {
+                out.push_str(&format!("error {message}\n"));
             }
 
             out.push_str("end\n");
@@ -298,6 +471,167 @@ fn handle(
             Ok(n) if n == 0 || (60..=86400).contains(&n) => send(commands, Command::Interval(n)),
             _ => "err interval must be 0 or 60-86400 seconds\n".to_string(),
         },
+
+        // `visual <brightness> <saturation> <blur>`, each 0-2 for the first
+        // two and 0-1 for the last. One command rather than three: they are
+        // adjusted together on one panel, and three round trips per drag of
+        // a slider is three times the pipe traffic for no gain.
+        "visual" => {
+            let numbers: Vec<f32> = rest.split(' ').filter_map(|n| n.parse().ok()).collect();
+            let [brightness, saturation, blur] = numbers[..] else {
+                return "err usage: visual <brightness> <saturation> <blur>\n".to_string();
+            };
+
+            if !(0.0..=2.0).contains(&brightness)
+                || !(0.0..=2.0).contains(&saturation)
+                || !(0.0..=1.0).contains(&blur)
+            {
+                return "err brightness and saturation are 0-2, blur is 0-1\n".to_string();
+            }
+
+            send(
+                commands,
+                Command::SetVisual(Visual {
+                    brightness,
+                    saturation,
+                    blur,
+                }),
+            )
+        }
+
+        // `sound <on|off> <volume> [duck]`. The third field is optional so an
+        // older client — or a person testing by hand — still works.
+        "sound" => {
+            let mut parts = rest.split(' ');
+            let (Some(state), Some(volume)) = (parts.next(), parts.next()) else {
+                return "err usage: sound <on|off> <volume> [duck]\n".to_string();
+            };
+            let Ok(volume) = volume.parse::<f32>() else {
+                return "err volume must be 0-1\n".to_string();
+            };
+            if !(0.0..=1.0).contains(&volume) {
+                return "err volume must be 0-1\n".to_string();
+            }
+
+            send(
+                commands,
+                Command::SetSound(Sound {
+                    enabled: state == "on",
+                    volume,
+                    duck: parts.next().map(|d| d == "true" || d == "on") != Some(false),
+                }),
+            )
+        }
+
+        // `power <battery_fps> <freeze_on_saver>`
+        "power" => {
+            let Some((fps, freeze)) = rest.split_once(' ') else {
+                return "err usage: power <battery_fps> <freeze_on_saver>\n".to_string();
+            };
+            let Ok(battery_fps) = fps.parse::<u32>() else {
+                return "err battery fps must be 0 or 1-240\n".to_string();
+            };
+            if battery_fps > 240 {
+                return "err battery fps must be 0 or 1-240\n".to_string();
+            }
+
+            send(
+                commands,
+                Command::SetPower(PowerPolicy {
+                    battery_fps,
+                    pause_on_saver: freeze == "true" || freeze == "on",
+                }),
+            )
+        }
+
+        "speed" => match rest.parse::<f32>() {
+            // Wider than this stops being a wallpaper: a tenth speed looks
+            // frozen and four times looks like a fault.
+            Ok(rate) if (0.25..=2.0).contains(&rate) => send(commands, Command::SetSpeed(rate)),
+            _ => "err speed must be 0.25-2.0\n".to_string(),
+        },
+
+        "fade" => match rest.parse::<u64>() {
+            Ok(ms) if ms <= 3000 => send(commands, Command::SetFade(Duration::from_millis(ms))),
+            _ => "err fade must be 0-3000 milliseconds\n".to_string(),
+        },
+
+        "span" => send(commands, Command::SetSpan(rest == "on" || rest == "true")),
+
+        "hotkeys" => send(
+            commands,
+            Command::SetHotkeys(rest == "on" || rest == "true"),
+        ),
+
+        "freeze" => {
+            let frozen = match rest {
+                "on" | "true" => true,
+                "off" | "false" => false,
+                // Toggle needs to know the current state, and the status
+                // mutex is right here.
+                "toggle" | "" => !status.lock().expect("status mutex poisoned").frozen,
+                _ => return "err usage: freeze <on|off|toggle>\n".to_string(),
+            };
+            send(commands, Command::Freeze(frozen))
+        }
+
+        // `own <monitor> <fit|-> <fps> <brightness|-> <saturation> <blur>`
+        //
+        // Six fields in one message rather than one command per setting: the
+        // UI edits them on one panel and sends the panel, which means a
+        // monitor can never end up half-overridden.
+        "own" => {
+            let parts: Vec<&str> = rest.split(' ').collect();
+            let [monitor, fit, fps, brightness, saturation, blur] = parts[..] else {
+                return "err usage: own <monitor> <fit|-> <fps> <bright|-> <sat> <blur>\n"
+                    .to_string();
+            };
+
+            let fit = match fit {
+                "-" => None,
+                name => match Fit::parse(name) {
+                    Some(fit) => Some(fit),
+                    None => return "err fit must be cover, contain, stretch or -\n".to_string(),
+                },
+            };
+
+            let fps = match fps.parse::<u32>() {
+                Ok(0) => None,
+                Ok(n) if n <= 240 => Some(n),
+                _ => return "err fps must be 0 (follow the desktop) or 1-240\n".to_string(),
+            };
+
+            let visual = if brightness == "-" {
+                None
+            } else {
+                let numbers: Vec<f32> = [brightness, saturation, blur]
+                    .iter()
+                    .filter_map(|n| n.parse().ok())
+                    .collect();
+                let [brightness, saturation, blur] = numbers[..] else {
+                    return "err brightness, saturation and blur must be numbers\n".to_string();
+                };
+                if !(0.0..=2.0).contains(&brightness)
+                    || !(0.0..=2.0).contains(&saturation)
+                    || !(0.0..=1.0).contains(&blur)
+                {
+                    return "err brightness and saturation are 0-2, blur is 0-1\n".to_string();
+                }
+                Some(Visual {
+                    brightness,
+                    saturation,
+                    blur,
+                })
+            };
+
+            send(
+                commands,
+                Command::SetOverrides {
+                    monitor: monitor.to_string(),
+                    overrides: Overrides { fit, visual, fps },
+                },
+            )
+        }
 
         "quit" => send(commands, Command::Quit),
 
