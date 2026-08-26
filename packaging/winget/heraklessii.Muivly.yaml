@@ -1,0 +1,11 @@
+# The version manifest. Two placeholders are filled in by the release
+# workflow: __VERSION__ from the tag, __SHA256__ from the built installer.
+#
+# These three files are what a submission to microsoft/winget-pkgs consists
+# of. They are kept in the repository rather than written by hand at release
+# time so that a change to them is reviewed like any other change.
+PackageIdentifier: heraklessii.Muivly
+PackageVersion: __VERSION__
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

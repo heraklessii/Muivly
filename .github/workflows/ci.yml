@@ -80,3 +80,10 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
         working-directory: wallpaper-ui/src-tauri
+
+      - name: Test
+        # The panel is mostly glue, but not all of it: the package format
+        # writes a zip by hand, and the name it unpacks entries under is the
+        # one place a downloaded file could try to write outside its folder.
+        run: cargo test
+        working-directory: wallpaper-ui/src-tauri

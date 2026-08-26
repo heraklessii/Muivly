@@ -25,8 +25,26 @@ changes.
    "reduced" — stopped.
 5. **No wallpaper rendering in `wallpaper-ui`.** The WebView is for settings.
    Its memory must never be part of the running wallpaper's cost.
-6. **No telemetry.** No analytics, no crash reporting that sends data, no
-   silent network calls of any kind.
+6. **No telemetry, and no network the user did not ask for.** No analytics, no
+   crash reporting that sends data, no update pings. The one place Muivly
+   talks to the internet is the Discover view: it fetches a page from
+   motionbgs.com when you open it and downloads a file when you press
+   download, and it will not talk to any other host. Nothing runs in the
+   background, and nothing identifying is ever sent.
+7. **Images may decode on the CPU; video may not.** Rule 1 is about video,
+   where a software decoder burns a core for as long as it is on screen. No
+   GPU decodes a PNG, and a still image decodes once and then costs nothing
+   at all — it is the lightest wallpaper Muivly has, not an exception.
+8. **On battery, less.** The engine watches the power source and lowers its
+   frame rate unplugged; under Windows' battery saver it stops drawing
+   altogether. Do not add a code path that keeps working at full rate while
+   the machine is asked to conserve — the wallpaper is the first thing that
+   should give way, not the last.
+9. **Nothing is installed the user cannot switch off.** Muivly writes to the
+   registry in exactly two places, both under `HKEY_CURRENT_USER` and both
+   with a switch in the settings window: the start-up entry and the Explorer
+   context-menu item. Nothing goes in `HKEY_LOCAL_MACHINE`, nothing needs
+   administrator rights, and nothing is written that the app cannot remove.
 
 ## Adding a dependency
 
@@ -73,7 +91,9 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-CI runs all three on Windows. It will not merge with warnings.
+CI runs all three on Windows, for both crates — `wallpaper-ui/src-tauri` has
+its own workspace and its own run of the same commands. It will not merge with
+warnings.
 
 ## Testing GPU code
 

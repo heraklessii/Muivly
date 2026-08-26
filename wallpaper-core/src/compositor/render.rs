@@ -333,6 +333,9 @@ pub struct Renderer {
     /// bounding box of the whole desktop, which is what the slices are cut
     /// out of.
     span: Option<Rect>,
+    /// What this adapter can decode in hardware, for the message shown when
+    /// a file will not open.
+    decode: crate::caps::DecodeCaps,
     /// The largest frame any decoder here is asked to produce.
     max_scale: (u32, u32),
     /// Files that would not open, waiting to be shown to the user once.
@@ -358,6 +361,7 @@ impl Renderer {
     /// Build a renderer for every surface on one adapter.
     pub fn new(
         luid: i64,
+        decode: crate::caps::DecodeCaps,
         surfaces: Vec<Surface>,
         max_scale: (u32, u32),
     ) -> windows::core::Result<Self> {
@@ -421,6 +425,7 @@ impl Renderer {
                 fade: Duration::ZERO,
                 span: None,
                 max_scale,
+                decode,
                 errors: Vec::new(),
             })
         }
@@ -638,7 +643,13 @@ impl Renderer {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string());
-                    let message = format!("cannot play {name}: {}", e.message());
+                    // The codec is worth a second look at the file: the
+                    // HRESULT alone cannot tell "install this" from "convert
+                    // this", and those are the only two things the user can
+                    // do about it.
+                    let reason = crate::decoder::why_not(&path, self.decode)
+                        .unwrap_or_else(|| e.message().to_string());
+                    let message = format!("cannot play {name}: {reason}");
                     eprintln!("{message}");
                     self.errors.push(message);
 

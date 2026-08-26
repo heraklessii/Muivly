@@ -1,0 +1,19 @@
+PackageIdentifier: heraklessii.Muivly
+PackageVersion: __VERSION__
+InstallerType: nullsoft
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+UpgradeBehavior: install
+# Muivly writes only to HKCU and %APPDATA%, so it installs per user and needs
+# no elevation. That is deliberate: a wallpaper is one person's choice about
+# their own desktop, and nothing here is worth an administrator prompt.
+ElevationRequirement: elevationProhibited
+ReleaseDate: __DATE__
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/heraklessii/Muivly/releases/download/v__VERSION__/Muivly-__VERSION__-setup.exe
+    InstallerSha256: __SHA256__
+ManifestType: installer
+ManifestVersion: 1.6.0

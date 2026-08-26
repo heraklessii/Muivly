@@ -21,6 +21,44 @@ use windows::Win32::Graphics::Direct3D11::{
 
 pub use still::is_still;
 
+/// Why a file would not play, in a sentence a user can act on.
+///
+/// The HRESULT from Media Foundation is the same one for "no decoder on this
+/// machine" and "no decoder for this on any machine", which are opposite
+/// problems: one is fixed by a free download and the other by converting the
+/// file. Naming the codec is what separates them.
+///
+/// `caps` is what the GPU said it could decode when the engine started.
+pub fn why_not(path: &Path, caps: crate::caps::DecodeCaps) -> Option<String> {
+    if is_still(path) {
+        return None;
+    }
+
+    let codec = video::codec_of(path)?;
+    let hardware = match codec {
+        "H.264" => caps.h264,
+        "HEVC" => caps.hevc_main || caps.hevc_main10,
+        "VP9" => caps.vp9,
+        "AV1" => caps.av1,
+        _ => return Some(format!("{codec}, which Muivly cannot decode on the GPU")),
+    };
+
+    if !hardware {
+        return Some(format!(
+            "{codec}, and this GPU has no {codec} decoder — convert the file to H.264"
+        ));
+    }
+
+    // The GPU can do it and Windows still would not. For AV1 and HEVC that
+    // is nearly always the missing Store extension: Microsoft ships neither
+    // codec with Windows, and both are free.
+    Some(match codec {
+        "AV1" => "AV1 — install the free 'AV1 Video Extension' from Microsoft Store".to_string(),
+        "HEVC" => "HEVC — install the 'HEVC Video Extensions' from Microsoft Store".to_string(),
+        other => format!("{other}, which Windows would not decode here"),
+    })
+}
+
 /// A frame ready to sample, in whichever form its decoder produces.
 ///
 /// NV12 comes straight from the video decoder and is converted in the shader.

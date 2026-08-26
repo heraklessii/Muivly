@@ -50,6 +50,18 @@ wallpaper-ui/     Tauri v2 + React. SADECE ayar paneli. Wallpaper render'ı
 - **Idle/occluded durumda render durur.** Fullscreen uygulama açıkken veya
   WorkerW görünmüyorken CPU/GPU kullanımı ~0'a yakın olmalı.
 - **wallpaper-ui'de asla wallpaper render'ı yapma.** WebView sadece UI için.
+- **Görsel/GIF CPU'da çözülür, video asla.** Kural video için: yazılım
+  decoder ekranda kaldığı sürece bir çekirdek yakar. PNG'i çözen GPU yok;
+  duran görsel bir kez çözülüp bir daha hiç maliyet çıkarmıyor — bu istisna
+  değil, Muivly'nin en hafif duvar kağıdı.
+- **Pilde daha az.** Motor güç kaynağını izliyor; fişten çekilince kare hızı
+  düşüyor, Windows pil tasarrufu açıkken çizim tamamen duruyor (son kare
+  ekranda kalıyor). Makine tasarruf isterken tam hızda çalışmayı sürdüren bir
+  yol ekleme.
+- **Kullanıcının kapatamayacağı hiçbir şey kurulmaz.** Registry'ye yalnız iki
+  yerde yazıyoruz, ikisi de `HKEY_CURRENT_USER` altında ve ikisinin de
+  ayarlarda anahtarı var: başlangıç girdisi ve Explorer sağ tık menüsü.
+  `HKEY_LOCAL_MACHINE` yok, yönetici hakkı yok.
 - Yeni bağımlılık (crate/npm paketi) eklemeden önce RAM/binary boyutu etkisini
   değerlendir, büyükse sor.
 
@@ -64,8 +76,12 @@ kullanacak. Bunun günlük işe yansıması:
 - **CI yeşil olmadan bitmiş sayılmaz**: `cargo fmt --all -- --check`,
   `cargo clippy --all-targets -- -D warnings`, `cargo test --all`. Uyarı
   bırakma.
-- **Telemetri yok.** Analytics, crash reporting, sessiz ağ çağrısı yok.
-  README bunu vaat ediyor.
+- **Telemetri yok, kullanıcının istemediği ağ trafiği de yok.** Analytics,
+  crash reporting, güncelleme pingi yok. Ağa çıkan tek yer Keşfet görünümü:
+  açıldığında motionbgs.com'dan sayfa çekiyor, indir'e basınca dosya
+  indiriyor, başka hiçbir host'a gitmiyor (`web.rs`'te host allowlist'i
+  var — kaldırma). Arka planda hiçbir şey çalışmıyor, kimlik bilgisi
+  gönderilmiyor. README bunu vaat ediyor.
 - **Saf mantık test edilir.** `caps/policy.rs` ve `caps/adapter.rs`'teki
   sınıflandırma gibi donanımdan bağımsız kod her zaman testli olmalı;
   donanıma dokunan kod için `--caps` çıktısı worklog'a yazılır.

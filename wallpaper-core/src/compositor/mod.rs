@@ -222,7 +222,12 @@ impl Stage {
                 surfaces.push(Surface::create(parent, monitor)?);
             }
 
-            let renderer = Renderer::new(adapter.luid, surfaces, profile.rec.max_scale)?;
+            let renderer = Renderer::new(
+                adapter.luid,
+                adapter.decode,
+                surfaces,
+                profile.rec.max_scale,
+            )?;
             println!(
                 "surface: {} monitor(s) on {}",
                 renderer.monitor_count(),

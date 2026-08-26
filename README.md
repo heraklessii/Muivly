@@ -31,6 +31,10 @@ That goal drives every design decision in this repo:
   decode per GPU — sharing across adapters would break zero-copy.)
 - **Zero work when nothing is visible.** Fullscreen app in front? Desktop
   hidden? Rendering stops, not "slows down".
+- **Unplugged is a different budget.** On battery Muivly drops to a lower frame
+  rate, and under Windows' battery saver it stops moving altogether — the last
+  frame stays on screen. Both are settings; both are on by default, because the
+  machines this is for are the ones where it matters.
 - **The settings window is a separate process.** It uses a WebView, which costs
   RAM. Muivly makes that a cost you pay only while the settings window is open,
   never while the wallpaper is running.
@@ -44,11 +48,21 @@ Planned artifacts, per release:
 
 | File | What it is |
 |---|---|
-| `Muivly-x.y.z-setup.exe` | Installer. Adds a start-up entry, associates wallpaper files. |
+| `Muivly-x.y.z-setup.exe` | Installer. Per user, no administrator prompt. |
 | `Muivly-x.y.z-portable.zip` | Unzip and run. No installer, no registry writes. |
+
+Once the first release is out it will also be installable with winget:
+
+```bash
+winget install heraklessii.Muivly
+```
 
 Windows 10 (1903+) or Windows 11, 64-bit. A GPU with hardware video decode —
 essentially anything from 2014 onward, including integrated graphics.
+
+HEVC and AV1 need Microsoft's free codec extensions from the Store; Windows
+does not ship either. Muivly says so by name when a file needs one, rather
+than reporting that the file would not open.
 
 ## Trying it
 
@@ -136,7 +150,9 @@ wallpaper-core/   Rust native binary. The engine. Keeps running — and keeps it
   caps/           GPU/system probe. Runs once at startup.
   decoder/        Media Foundation + D3D11VA hardware decode.
   compositor/     WorkerW injection, multi-monitor shared D3D11 texture.
-  power/          Fullscreen/occlusion detection, render throttle and pause.
+  power/          Fullscreen/occlusion detection, render throttle and pause,
+                  and the battery policy.
+  audio/          WASAPI playback, and standing down for other applications.
   ipc/            Named pipe server.
 
 wallpaper-ui/     Tauri v2 + React. The settings panel, and nothing else.
@@ -153,10 +169,29 @@ Design notes and the reasoning behind each choice live in [`docs/`](docs/) —
 - [x] WorkerW injection, one D3D11 device per adapter, per-monitor surfaces
 - [x] Occlusion detection — decoding and rendering stop when nothing is visible
 - [x] Media Foundation decoder — hardware H.264/HEVC/VP9/AV1, zero-copy
-- [ ] Bring memory down (currently ~265 MB with video; too high)
 - [x] Settings UI — Tauri v2, closes to the system tray
 - [x] Per-monitor wallpaper assignment
 - [x] Local library and playlists
+- [x] Frame pacing that holds — high-resolution timer, woken by the video's own
+      frame times rather than a grid of ours
+- [x] Decoding on its own thread, so a slow read never lands in a frame
+- [x] Still images and animated GIFs
+- [x] Sound, off by default, muted the moment nothing is visible
+- [x] Brightness, saturation and blur
+- [x] Start with Windows — the engine only, which restores its own last session
+- [x] Tray menu: next wallpaper, pause, mute, quit
+- [x] Import from Wallpaper Engine's workshop folders
+- [x] Discover — free wallpapers from motionbgs.com, downloaded into the library
+- [x] Live CPU and memory readout, measured by the engine itself
+- [x] Battery-aware: a lower frame rate unplugged, frozen under battery saver
+- [x] Ducking — the soundtrack steps back while another application is audible
+- [x] Per-monitor fit, grade and frame rate; one wallpaper spanned across screens
+- [x] Crossfade between wallpapers, and playback speed
+- [x] Global shortcuts, and "set as wallpaper" in Explorer's right-click menu
+- [x] Survives a monitor being plugged in, a resolution change, sleep, and an
+      Explorer restart
+- [x] `.muivly` packages — a wallpaper and its credit in one file
+- [ ] Bring memory down further (a 4K clip on two GPUs is still ~780 MB)
 - [ ] First release
 - [ ] Measured RAM/CPU comparison against the alternatives
 
@@ -169,8 +204,21 @@ will not be merged no matter how well it works — the rules are the product.
 ## Privacy
 
 Muivly does not phone home. No telemetry, no analytics, no update pings you did
-not ask for, no account. It reads the video files you point it at and nothing
-else.
+not ask for, no account.
+
+Installing it writes to two places in your own registry, both optional and both
+switchable from the settings window: the start-up entry, and the "Muivly duvar
+kağıdı yap" item in Explorer's right-click menu. Nothing is written outside
+`HKEY_CURRENT_USER` and `%APPDATA%\Muivly`, which is why the installer never
+asks for administrator rights.
+
+It goes online in exactly one place: the **Discover** view, which lists free
+wallpapers from [motionbgs.com](https://motionbgs.com). Opening that view
+fetches a page; pressing download fetches a file into
+`%APPDATA%\Muivly\wallpapers`. Nothing is sent but the request itself — no
+identifier, no history, no account — and the engine refuses to talk to any host
+other than that one. Close the view and Muivly is offline again. Everything
+else works with no connection at all.
 
 ## License
 

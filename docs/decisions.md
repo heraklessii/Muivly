@@ -274,9 +274,12 @@ gizler ve sistem tepsisinde kalır. Çıkış tepsi menüsünden.
 olmasını bekliyor — her tepsi uygulaması böyle davranıyor. Gerçekten
 kapatmak, sonra tekrar açmak için Başlat menüsüne gitmek gerektirirdi.
 
-**Not:** Tepsi menüsündeki "Çıkış" yalnız UI'ı kapatıyor. Motoru durdurmak
-ayrı bir eylem (`quit` komutu) — kullanıcı ayar panelini kapattı diye
-duvar kağıdı kaybolmamalı.
+**Not (2026-08-26 güncellendi):** Pencereyi kapatmak (X) hâlâ yalnız gizliyor,
+motor çalışmaya devam ediyor. Ama tepsi menüsündeki **"Çıkış" artık motoru da
+durduruyor** — UI çıkmadan önce pipe üzerinden `quit` gönderiyor. Önceki
+davranışta (sadece UI kapanıyordu) kullanıcının masaüstünde, Görev
+Yöneticisi'nden başka hiçbir yerden erişemediği bir `muivly-core` kalıyordu;
+bu arka plan servisi değil, kurtulunamayan bir işlem demek.
 
 ---
 
@@ -307,3 +310,377 @@ UI alanı eklendiğinde eşlik eden bir Rust değişikliği demekti.
 **Bozuk dosya:** Üstüne yazılmıyor. `state.corrupt-<zaman>.json` olarak kenara
 alınıp UI boştan başlıyor. Aksi hâlde parse hatası → boş kitaplık → ilk kayıt
 iyi dosyayı siliyordu; bu gerçekten yaşandı (BOM'lu bir dosyayla).
+
+---
+
+## 2026-08-26 — Render döngüsü kendi ızgarasında değil, videonun temposunda uyanır
+
+**Karar:** Kare hızlandırma iki sınırın geç olanına göre yapılıyor:
+(1) tier'ın hedef fps'i, (2) decoder'ın elindeki bir sonraki karenin
+zamanı (`VideoDecoder::time_to_next`). Uyku `thread::sleep` ile değil,
+yüksek çözünürlüklü bekleme sayacıyla (`compositor::clock::Pacer`).
+Ayrıca kare değişmediyse `Present` çağrılmıyor.
+
+**Gerekçe:** Üç ayrı takılma kaynağı vardı ve üçü de burada birleşiyordu:
+
+- **Uyku hassasiyeti.** Windows'ta `thread::sleep` sistem sayaç adımına
+  (varsayılan 15.6 ms) yuvarlanıyor. 30 fps'te 33.3 ms isteyip 46.8 ms
+  uyuyorduk — her ikinci kare tam bir adım geç. Görüntüde bu doğrudan
+  takılma. `timeBeginPeriod(1)` çözerdi ama sistem genelinde sayaç
+  çözünürlüğünü yükseltip her işlemin pil tüketimini artırıyor; yüksek
+  çözünürlüklü sayaç yalnız bizi ilgilendiriyor (Win10 1803+; daha
+  eskisinde sıradan sayaca düşüyor, yani eskisinden kötü değil).
+- **Izgara uyumsuzluğu.** Kendi fps ızgaramızda uyanmak, 24 fps'lik bir
+  klibin bazı karelerini bir tik bazılarını iki tik göstermek demek. Kare
+  kaybı yok ama göz düzensizliği görüyor — izleyici için "takılıyor".
+- **Gereksiz sunum.** 30 fps video 60 fps ızgarada saniyede 30 kez aynı
+  pikselleri sunuyordu. Artık kare değişmediyse çizim de flip de yok.
+
+**Ayrıca:** Decoder, `IMFSample`'ı kopyalama yapılana kadar canlı tutuyor.
+Yalnız `ID3D11Texture2D`'yi tutmak yetmiyordu — havuz slot'u sample'ın
+referans sayısına bakıyor, sample bırakılınca decoder aynı slot'un üstüne
+yazabiliyordu.
+
+---
+
+## 2026-08-26 — Oturum başına tek motor
+
+**Karar:** `muivly-core` başlarken `Local\muivly-core` adlı bir mutex
+alıyor. Alamıyorsa "already running" yazıp çıkıyor. UI de başlatmadan önce
+pipe'a bakıyor.
+
+**Gerekçe:** İkinci bir motor aynı WorkerW'a ikinci bir duvar kağıdı
+çiziyor, aynı videoyu bir daha decode ediyor (projenin tüm RAM/CPU
+iddiasının tersi) ve pipe adına yalnız biri cevap veriyor — sonraki `quit`
+birini durdurup diğerini bırakıyor. Mutex'i kernel süreç nasıl biterse
+bitsin (çökme dâhil) serbest bırakıyor; kilit dosyası bunu yapmıyor.
+
+---
+
+## 2026-08-26 — Açılmayan dosya motoru düşürmez
+
+**Karar:** `VideoDecoder::open` hata verirse monitör temizleniyor, sebep
+`Status.error` alanına yazılıp UI'da gösteriliyor, motor çalışmaya devam
+ediyor.
+
+**Gerekçe:** Eskiden hata `compositor::run`'dan yukarı gidip işlemi
+`exit(1)` ile bitiriyordu. Donanım decoder'ı olmayan tek bir codec, taşınmış
+tek bir dosya bütün ekranlardaki duvar kağıdını düşürüyordu — kullanıcı için
+"Muivly çalışmayı durdurdu", oysa yapılması gereken tek şey o dosyayı
+oynatmamak.
+
+---
+
+## 2026-08-26 — Decode kendi thread'inde, iki karelik kuyrukla
+
+**Karar:** `IMFSourceReader::ReadSample` artık render thread'inde değil.
+Okuyucu thread'i çözülmüş kareleri `sync_channel(2)` üzerinden veriyor.
+
+**Gerekçe:** ReadSample'ın maliyeti sabit değil — keyframe, soğuk dosya,
+parçalı moov kutusu ortalama karenin çok üstüne çıkıyor. Bu, render
+thread'inde ödendiğinde o kare deadline'ı kaçırıyor; tempolama ne kadar iyi
+olursa olsun gözle görülür bir takılma.
+
+**Kuyruk neden 2:** Yeterince derin ki ani sıçramayı yutsun, yeterince sığ ki
+kapalı bir monitörde decoder bir iki kare içinde dursun — thread dolu kanalda
+`send`'de bloke oluyor, yani "görünmeyen şey çalışmaz" kuralı ayrıca
+kodlanmadan kendiliğinden sağlanıyor.
+
+**Timestamp'ler:** Klip başa sardığında sıfırlanıyor, bu yüzden her kare bir
+`pass` numarası taşıyor. Tüketici `pass` değişince klip saatini sıfırlıyor —
+"tekrar ilk kare" ile "çok geç kalmış kare" aksi hâlde ayırt edilemiyordu.
+
+---
+
+## 2026-08-26 — Ölçek kapağı yalnız kaynak 4 kat büyükse uygulanır
+
+**Karar:** `max_scale` artık gerçekten uygulanıyor ama eşikli: kaynağın
+piksel sayısı kapağın 4 katından fazlaysa Media Foundation'dan küçük kare
+isteniyor, değilse dosya kendi boyutunda çözülüyor.
+
+**Gerekçe — ölçüm:** Kapak koşulsuz uygulandığında beklenen bellek kazancı
+çıkmadı, tersi oldu. Sebep: kodek zaten native boyutta çözmek zorunda; küçük
+kare istemek araya bir video processor ve **ikinci bir tampon havuzu**
+sokuyor. İlker'in makinesinde 4K klip / 1440p kapak ile ölçüldü:
+
+| | CPU (tek çekirdek payı) | private bellek |
+|---|---|---|
+| Kapak yok | %6.6 | 784 MB |
+| Kapak koşulsuz | %8.9 | 834-967 MB |
+
+Kazanılan tek şey kare başına blit ve shader örneklemesi — koca bir havuza
+değmesi için kaynağın ekrana göre absürt büyük olması gerekiyor. 8K klibin
+1440p masaüstünde ölçeklenmesi mantıklı, herkesin elindeki 4K klibin değil.
+
+**Not:** Ölçekleme `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING`
+olmadan sessizce reddediliyor — kapak bir süre hesaplanıp raporlanıp hiç
+uygulanmıyordu.
+
+---
+
+## 2026-08-26 — Görsel ve GIF WIC ile, CPU'da
+
+**Karar:** png/jpg/bmp/webp/gif/tiff `decoder/still.rs`'te WIC ile çözülüyor.
+GIF kareleri gerektikçe bir tuvale kompoze ediliyor, hepsi baştan açılıp
+bellekte tutulmuyor.
+
+**Gerekçe:** "Decode her zaman GPU'da" kuralı video için. PNG çözen GPU yok;
+duran görsel bir kez çözülüp bir kez yükleniyor ve sonra hiç maliyeti yok —
+ne decode, ne çizim, ne flip. Bu bir istisna değil, Muivly'nin en hafif
+duvar kağıdı. GIF kareleri baştan açılsa 1080p/60 kare ~500 MB ederdi; GIF
+zaten kareyi yalnız değişen dikdörtgen olarak saklıyor.
+
+---
+
+## 2026-08-26 — Ses tek akış, birincil ekranı takip eder
+
+**Karar:** WASAPI shared mode + MF ses decode, kendi thread'inde. Varsayılan
+kapalı. Her monitör kapandığında (tam ekran oyun, kilit ekranı) susuyor.
+
+**Gerekçe:** Monitör başına ses iki farklı klipte iki şarkı demek. Aynı klip
+iki ekranda ise zaten tek şarkı. İkisi de tek akışa çıkıyor, o da birincil
+ekranı takip ediyor. Shared mode, ses kartını ele geçirmeden diğer her şeyle
+karışabilmek için.
+
+---
+
+## 2026-08-26 — Motor kendi oturumunu hatırlıyor
+
+**Karar:** `%APPDATA%\Muivly\session.txt` — açık duvar kağıtları ve ayarlar.
+Kitaplık değil; o frontend'in `state.json`'ında kalıyor.
+
+**Gerekçe:** Otomatik başlatma bunu zorunlu kıldı. Açılışta motor tek başına
+geliyor ve ekranında hiçbir şey olmayan bir duvar kağıdı motoru kimsenin
+açık bırakacağı bir şey değil. Alternatif — UI'ı gizli başlatmak — açılışa
+bir WebView'ın ~100 MB'ını yazmak demekti; projenin tam olarak reddettiği
+şey.
+
+**Run anahtarı UI'ı değil motoru gösteriyor**, HKCU'da (HKLM yönetici hakkı
+isterdi, bu bir kullanıcının kendi masaüstü tercihi).
+
+---
+
+## 2026-08-26 — Keşfet: motionbgs.com, tek host, kullanıcı tetikli
+
+**Karar:** UI'da bir keşfet görünümü. Rust yalnız indiriyor ve kaydediyor
+(`web.rs`), HTML frontend'de `DOMParser` ile ayrıştırılıyor.
+
+**Gerekçe:** HTML ayrıştırıcı crate'i, WebView'da hazır duran bir şeyi daha
+kötü yapmak için büyük bir bağımlılık olurdu. Rust tarafında **host
+allowlist** var ve bu bir formalite değil: onsuz bu komutlar, WebView'a
+erişebilen her şeyin kullanabileceği, dosya sistemine bağlı genel amaçlı bir
+proxy olurdu. Dosya adları da temizleniyor (`safe_name`) — bir sayfadan gelip
+yola dönüşen tek şey o.
+
+**Offline kalıyor:** Görünüm açılmadan hiçbir istek yok. README ve
+CONTRIBUTING bunu açıkça yazıyor.
+
+---
+
+## 2026-08-26 — IPC: üç pipe instance'ı, uzak istemci yok
+
+**Karar:** `CreateNamedPipeW` üç ayrı thread'de üç instance açıyor ve mod'a
+`PIPE_REJECT_REMOTE_CLIENTS` eklendi.
+
+**Gerekçe:** Tek instance ile UI düzenli olarak kaybediyordu. İstemci her
+istek için yeni bağlantı açıyor ve durumu zamanlayıcıyla yokluyor; kullanıcı
+tıklaması bir yoklamanın üstüne geldiğinde ikincisi `ERROR_PIPE_BUSY` alıyor,
+UI bunu ancak "motor çalışmıyor" diye okuyabiliyordu. Aynı boşluk bir
+konuşmanın bitişi ile bir sonraki instance'ın oluşturulması arasında da
+vardı. Üç dinleyici ikisini de kapatıyor; bağlantı başına thread ise 1.5
+saniyede bir sonsuza kadar thread doğurmak demekti.
+
+**Uzak istemci:** İsimli pipe, aksi söylenmedikçe SMB üzerinden
+`\<makine>\pipe\muivly` olarak erişilebilir. Bu protokolün ağa çıkacak hiçbir
+parçası yok.
+
+**İstemci tarafı:** `connect` meşgul pipe'ı 20 ms aralıkla on kez deniyor —
+"meşgul", "yok"un tam tersi bir cevap.
+
+---
+
+## 2026-08-26 — Tauri komutları async, main thread'de değil
+
+**Karar:** Pipe, disk ve Steam taraması yapan her `#[tauri::command]`
+`(async)` ile işaretlendi.
+
+**Gerekçe:** Tauri senkron bir komutu main thread'de çalıştırıyor. Bu
+komutların hepsi bloklayan G/Ç yapıyor, yani pencerenin kendi thread'ini
+motorun cevap verme süresi kadar tutuyorlardı. Motor hızlı — ta ki olmayana
+kadar (ekran değişimi, uyuyan diskten açılan dosya); o anda ayar penceresi
+boyanmayı bırakıyor. Bu dosyalardaki hiçbir şey pencereye dokunmuyor.
+
+---
+
+## 2026-08-26 — Video processor yalnız gerçekten gerekince
+
+**Karar:** `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING` artık koşulsuz
+değil. Okuyucu önce processor'sız kuruluyor; NV12 kabul edilirse öyle
+kalıyor. Yalnız iki durumda processor'lu bir okuyucu ile yeniden açılıyor:
+(1) NV12 reddedildi (10-bit HEVC P010 veriyor), (2) kaynak kapağın dört
+katından büyük, yani ölçekleme yapılacak.
+
+**Gerekçe:** Processor bir tampon havuzu daha demek ve duvar kağıdının ömrü
+boyunca duruyor — ölçüm zaten `docs/decisions.md`'de (784 MB → 834+ MB).
+Yaygın hâl (8-bit H.264/HEVC, native NV12) bunun hiçbirine ihtiyaç duymuyor.
+Fazladan açma maliyeti yalnız nadir hâlde ödeniyor.
+
+**Ayrıca:** `MF_SOURCE_READER_DISABLE_CAMERA_PLUGINS` eklendi (burada kamera
+yok, eklenti zinciri boşuna yükleniyordu) ve `MFStartup` süreç başına bir
+kez çağrılıyor.
+
+---
+
+## 2026-08-26 — Görünmeyince ses susmuyor, duruyor
+
+**Karar:** Her monitör kapandığında ses thread'i akışı `Stop`+`Reset` ile
+durduruyor ve 200 ms'lik yoklamaya geçiyor.
+
+**Gerekçe:** Eskiden sessizlik, kazancı sıfıra çarpmakla elde ediliyordu —
+yani tam ekran oyun açıkken kimsenin duymadığı bir parça CPU'da çözülmeye
+devam ediyordu. "Görünmüyorsa iş yok" kuralının ses tarafındaki karşılığı
+eksikti.
+
+---
+
+## 2026-08-26 — Kitaplık ızgarası: ekran dışındaki karo çözücü tutmaz
+
+**Karar:** `Thumb` medya elemanını yalnız karo görünürken (ya da 800 piksel
+yakınındayken) oluşturuyor; uzaklaşınca eleman söküyor.
+
+**Gerekçe:** `preload="metadata"` her karoyu bir başlık okumasına indiriyor
+ama `<video>` ne kadar az çözerse çözsün bir çözücü, ve tarayıcı aynı anda
+kaç tane olabileceğini sınırlıyor (elli civarı). Sonrasında her yeni karo
+sessizce yüklenemiyor. Izgara gerçek yüksekliğini koruduğu için kaydırma
+konumu ve klavye gezinmesi bozulmuyor; giden yalnız çözücüler.
+
+**Alternatif (elendi):** Tam sanallaştırma (görünen aralığı hesaplayıp
+yalnız onu render etmek). Daha çok kod, aynı kazanç; asıl sınır DOM düğümü
+sayısı değil çözücü sayısıydı.
+
+---
+
+## 2026-08-26 — Pil ayrı bir bütçe
+
+**Karar:** `power/battery.rs`. `GetSystemPowerStatus` iki saniyede bir
+okunuyor; pilde kare hızı ayrı bir tavana (varsayılan 24) çekiliyor, Windows
+pil tasarrufu açıkken çizim tamamen duruyor.
+
+**Gerekçe:** `caps/policy.rs` zaten pilde 30 fps'e iniyordu ama bunu yalnız
+**açılışta bir kez** yapıyordu — kablo çekildiğinde hiçbir şey değişmiyordu.
+Hedef kitle laptop kullanıcıları; ölçülebilir farkın en görünür olduğu yer
+burası.
+
+**Dondurmak, kapatmak değil:** Tepsideki "duraklat" monitörleri kapatıp
+Windows duvar kağıdını gösteriyor. Pil tasarrufundaki davranış farklı: yüzey
+duruyor, son kare ekranda kalıyor, yalnız hareket duruyor. Kabloyu her
+çekişte masaüstünün bir anlığına Windows duvar kağıdına dönmesi kabul
+edilebilir değildi.
+
+---
+
+## 2026-08-26 — Ses, başkası konuşurken geri çekilir
+
+**Karar:** `audio/duck.rs`. Varsayılan çıkış aygıtındaki diğer oturumlar
+`IAudioSessionManager2` ile taranıyor; herhangi biri **duyulur** ses
+üretiyorsa duvar kağıdının sesi 200 ms içinde %12'ye iniyor.
+
+**Gerekçe:** Arka plan sesi ancak arka planda kaldığı sürece hoş. Video
+açıldığı anda üstüne binen bir ses, kullanıcının sesi bir daha hiç açmaması
+demek.
+
+**Oturum durumu değil, ölçüm:** `AudioSessionStateActive` yalanı çok: bir
+tarayıcı sekmesi hiçbir şey çalmadan dakikalarca "aktif" duruyor. Oturum
+başına tepe ölçer (`IAudioMeterInformation`) doğru sinyal. Sistem sesleri
+oturumu muaf — bir bildirim sesi, fade bitmeden bitiyor.
+
+---
+
+## 2026-08-26 — Ekran değişince her şey yeniden kuruluyor
+
+**Karar:** Gizli, üst düzey bir pencere (`compositor/notify.rs`)
+`WM_DISPLAYCHANGE`, `WM_SETTINGCHANGE`, uyanma bildirimi ve `WM_HOTKEY`
+alıyor. Yerleşim gerçekten değiştiyse (ya da WorkerW gittiyse) `caps` yeniden
+sorgulanıyor ve bütün sahne yeniden kuruluyor.
+
+**Neden ayrı bir pencere:** Duvar kağıdı yüzeyleri WorkerW'in **çocuğu**.
+Windows bu yayınları yalnız üst düzey pencerelere gönderiyor, `RegisterHotKey`
+de bir çocuk pencereye teslim edemiyor. `HWND_MESSAGE` de işe yaramıyor:
+message-only pencereler yayın mesajı almıyor — tam da alması gereken şeyi.
+
+**Yerleşim karşılaştırması:** `WM_SETTINGCHANGE` çok şey için tetikleniyor,
+o yüzden yeniden kurmadan önce monitör listesi (ad, konum, boyut) eskisiyle
+karşılaştırılıyor. Değişmediyse hiçbir maliyet yok.
+
+---
+
+## 2026-08-26 — Monitör başına ayar, tek çözme
+
+**Karar:** `fit`, görünüm (parlaklık/doygunluk/bulanıklık) ve kare hızı
+monitör başına geçersiz kılınabiliyor. Kare hızı tavanı sunumu atlıyor,
+çözmeyi değil.
+
+**Gerekçe:** Ultrawide + dikey ekran karışımında tek bir `fit` doğru olamaz.
+Kare hızının monitör başına olmasının ayrı bir değeri var: çözme zaten
+paylaşılıyor, dolayısıyla ikinci ekranı 10 fps'e çekmek çizim ve flip'lerin
+onda dokuzunu siliyor, çözmeden hiçbir şey eksilmiyor.
+
+---
+
+## 2026-08-26 — Yayma (span): kırpma masaüstünün tamamına göre
+
+**Karar:** `span` açıkken UV eşlemesi tek monitöre değil, bütün masaüstünün
+sınırlayıcı kutusuna göre hesaplanıyor; her monitör kendi dikdörtgenine
+düşen dilimi örnekliyor.
+
+**Gerekçe:** Kırpma monitör başına yapılsaydı her ekran videoyu kendi
+oranına göre kırpardı ve görüntü çerçeveler arasında kaymış olurdu — yani
+yaymanın tek amacı kaybolurdu.
+
+**Playlist:** `span` açıkken bir ekrana duvar kağıdı seçmek hepsini birden
+değiştiriyor. Dilimlerin tek bir resimden gelmesi şart; aksi hâlde her ekran
+başka bir videonun bir parçasını gösterirdi.
+
+---
+
+## 2026-08-26 — Geçişte eski kare bir kopya olarak tutuluyor
+
+**Karar:** Duvar kağıdı değiştiğinde, eski çözücü kapanmadan hemen önce
+ekrandaki kare ekran boyutunda bir BGRA dokusuna çiziliyor; yeni kağıdın
+üstüne azalan alfa ile bindiriliyor ve geçiş biter bitmez doku bırakılıyor.
+
+**Gerekçe:** Eski çözücü zaten kapanıyor — o kareyi yakalamanın son anı
+burası. Kopya ekran uzayında alınıyor (fit, grade ve blur uygulanmış hâlde),
+böylece geçişin taşıması gereken tek şey alfa; ayrı bir durum yok.
+
+**Maliyet:** 1080p'de 8 MB, geçiş süresince. Bitince düşüyor — RAM sözü
+verilen bir projede süslemenin bellekte kalması kabul edilemezdi.
+
+---
+
+## 2026-08-26 — `.muivly` paketi: zip, elle yazıldı
+
+**Karar:** Paket, `manifest.json` + medya içeren bir zip. Sıkıştırma yok
+(yalnız "stored"), zip okuma/yazma `wallpaper-ui/src-tauri/src/pack.rs`
+içinde elle yazıldı.
+
+**Gerekçe:** Yük zaten H.264 — sıkıştırılacak bir şey yok. Zip formatı
+seçildi çünkü Muivly'si olmayan biri de açabilsin. Kütüphane yerine ~200
+satır: bağımlılık ağacı, derleme süresi ve ikili boyutu yok. Hiçbir yerde
+dosyanın tamamı belleğe alınmıyor (64 KB parçalar).
+
+**Güvenlik sınırı:** Paketteki her ad `safe_name`'den geçiyor — ayraçlar ve
+sürücü iki noktası siliniyor. Formatın tek gerçek saldırı yüzeyi bu.
+
+---
+
+## 2026-08-26 — Kodek adı, HRESULT değil
+
+**Karar:** Bir dosya açılamadığında `decoder::why_not` dosyanın video
+akışının alt türünü okuyup mesajı ona göre yazıyor: "AV1 — Store'dan ücretsiz
+AV1 Video Extension'ı kur" ile "bu GPU'da AV1 çözücü yok, H.264'e dönüştür"
+birbirinden ayrılıyor.
+
+**Gerekçe:** Media Foundation ikisi için de aynı HRESULT'ı veriyor, oysa
+biri ücretsiz bir indirmeyle, diğeri dosyayı dönüştürmekle çözülüyor.
+Kullanıcının yapabileceği iki şey var ve hangisi olduğunu söylemek gerekiyor.

@@ -1,0 +1,28 @@
+PackageIdentifier: heraklessii.Muivly
+PackageVersion: __VERSION__
+PackageLocale: en-US
+Publisher: heraklessii
+PublisherUrl: https://github.com/heraklessii
+PublisherSupportUrl: https://github.com/heraklessii/Muivly/issues
+PackageName: Muivly
+PackageUrl: https://github.com/heraklessii/Muivly
+License: Apache-2.0
+LicenseUrl: https://github.com/heraklessii/Muivly/blob/main/LICENSE
+ShortDescription: A light live wallpaper engine for Windows.
+Description: >-
+  Muivly plays video and image wallpapers on the Windows desktop, built for
+  machines that cannot spare much for one. Video is decoded on the GPU and
+  never copied through system memory, monitors showing the same clip share a
+  single decode, and rendering stops entirely when a fullscreen window covers
+  the desktop. It lowers its frame rate on battery and stops under battery
+  saver. No telemetry, no background network traffic, no account.
+Moniker: muivly
+Tags:
+  - wallpaper
+  - live-wallpaper
+  - desktop
+  - video
+  - animated-wallpaper
+ReleaseNotesUrl: https://github.com/heraklessii/Muivly/releases/tag/v__VERSION__
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

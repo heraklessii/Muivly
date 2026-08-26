@@ -41,8 +41,9 @@ use windows::Win32::Graphics::Dxgi::Common::{
 use windows::Win32::Media::MediaFoundation::{
     IMFDXGIBuffer, IMFSample, IMFSourceReader, MFCreateAttributes, MFCreateDXGIDeviceManager,
     MFCreateMediaType, MFCreateSourceReaderFromURL, MFMediaType_Video, MFStartup,
-    MFVideoFormat_NV12, MFSTARTUP_NOSOCKET, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
-    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READERF_ENDOFSTREAM,
+    MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_HEVC_ES,
+    MFVideoFormat_NV12, MFVideoFormat_VP90, MFSTARTUP_NOSOCKET, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
+    MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SOURCE_READERF_ENDOFSTREAM,
     MF_SOURCE_READER_D3D_MANAGER, MF_SOURCE_READER_DISABLE_CAMERA_PLUGINS,
     MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
     MF_VERSION,
@@ -395,6 +396,47 @@ fn read_loop(reader: Sent<IMFSourceReader>, tx: std::sync::mpsc::SyncSender<Deco
         if tx.send(decoded).is_err() {
             return;
         }
+    }
+}
+
+/// Which codec a file's video stream is in, in words for a user.
+///
+/// Read straight from the container, without a decoder — so it works for
+/// exactly the file that would not play, which is the only time anybody
+/// asks. `None` means the container itself could not be read, in which case
+/// the codec is not the interesting part of the answer.
+///
+/// This exists for the error message. "cannot play clip.webm" tells a user
+/// nothing they can act on; "AV1, and this GPU has no AV1 decoder" tells
+/// them the file needs converting, and "AV1, and Windows needs the free
+/// extension" tells them it does not.
+pub fn codec_of(path: &Path) -> Option<&'static str> {
+    use std::os::windows::ffi::OsStrExt;
+
+    start_media_foundation().ok()?;
+
+    unsafe {
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // No D3D manager and no attributes: nothing is being decoded here,
+        // only the stream header read. That also means this cannot fail for
+        // the reason the real open failed.
+        let reader = MFCreateSourceReaderFromURL(PCWSTR(wide.as_ptr()), None).ok()?;
+        let stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+        let media_type = reader.GetNativeMediaType(stream, 0).ok()?;
+        let subtype = media_type.GetGUID(&MF_MT_SUBTYPE).ok()?;
+
+        Some(match subtype {
+            s if s == MFVideoFormat_H264 => "H.264",
+            s if s == MFVideoFormat_HEVC || s == MFVideoFormat_HEVC_ES => "HEVC",
+            s if s == MFVideoFormat_VP90 => "VP9",
+            s if s == MFVideoFormat_AV1 => "AV1",
+            _ => "an unrecognised codec",
+        })
     }
 }
 

@@ -201,3 +201,113 @@ mimari etkisi olan veya sonraki session'ın bilmesi gereken şeyler.
 - `--diag` artık her pencerenin gerçek ebeveynini yazıyor. Bir ara duvar
   kağıdının ikonların üstüne çıktığını sandım; ebeveyn çıktısı `parent=0x101e8`
   (WorkerW) göstererek yanlış alarmı bir komutta kapattı.
+
+## 2026-08-26 — Takılan oynatma, kapanmayan motor
+
+- **Kare hızlandırma yeniden yazıldı.** `compositor::clock::Pacer` (yüksek
+  çözünürlüklü bekleme sayacı) + videonun kendi kare zamanına göre uyanma +
+  kare değişmediyse `Present` etmeme. Üç bağımsız takılma kaynağı vardı;
+  detay `docs/decisions.md`.
+- **Decoder sample sızıntısı düzeltildi.** `IMFSample` kopyalama bitene
+  kadar tutuluyor; önceden bırakılıyordu ve decoder aynı texture slot'unun
+  üstüne yazabiliyordu.
+- **Tepsi > Çıkış artık motoru da durduruyor** (pipe üzerinden `quit`),
+  ve motor oturum başına tek örnek (adlandırılmış mutex). İkisi birlikte
+  "muivly-core kapanmıyor" şikâyetinin iki ayrı sebebiydi.
+- **Açılmayan dosya artık motoru düşürmüyor**; sebep `Status.error` ile
+  UI'a taşınıyor (`status` yanıtına `error <message>` satırı eklendi).
+
+## 2026-08-26 — Dokuz maddelik toplu geliştirme
+
+Hepsi tek turda; detaylar `docs/decisions.md`.
+
+- **Decode kendi thread'inde** (2 karelik kuyruk, `pass` numaralı kareler).
+- **Ölçek kapağı** gerçekten uygulanıyor ama 4x eşikle — koşulsuz hâli
+  ölçümde CPU'yu %6.6'dan %8.9'a, belleği 784 MB'dan 834+ MB'a çıkardı.
+- **Görsel + animasyonlu GIF** (`decoder/still.rs`, WIC).
+- **Ses** (WASAPI shared, varsayılan kapalı, görünmeyince susuyor).
+- **Parlaklık / doygunluk / bulanıklık** shader'da, `visual` komutu ile.
+- **Windows ile başlat** — Run anahtarı motoru gösteriyor, motor da
+  `session.txt`'ten son oturumu geri yüklüyor.
+- **Tepsi menüsü**: sonraki, duraklat, sesi aç/kapat, çıkış.
+- **Wallpaper Engine içe aktarma** (Steam kütüphaneleri + `project.json`).
+- **Keşfet** — motionbgs.com, tek host allowlist'i, kullanıcı tetikli.
+- **Performans göstergesi** — motorun kendi CPU/bellek/fps ölçümü.
+
+**Yolda çıkan hatalar:**
+- Sabit tampon 40 bayta çıkınca `CreateBuffer` E_INVALIDARG verdi; D3D11
+  16'nın katını şart koşuyor. Motor açılışta ölüyordu, mesaj yalnız
+  "Parametre hatalı" idi.
+- Ölçek kapağı `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING` olmadan
+  sessizce reddediliyordu — hesaplanıyor, raporlanıyor, uygulanmıyordu.
+- `realfps` iki monitörde 60 gösteriyordu (30 fps klip için). Flip sayısı ile
+  kare hızı aynı şey değil; artık sunum yapan döngü geçişleri sayılıyor.
+- `safe_name` testi arka arkaya noktaları elemiyordu — kendi testi yakaladı.
+
+## 2026-08-26 — Güvenlik, kararlılık ve ölçüm turu
+
+Kod okunarak çıkarılan hatalar; hepsi tek turda. Gerekçeler
+`docs/decisions.md`'de.
+
+- **Keşfet indirmesinde iki açık kapatıldı.** (1) reqwest varsayılan olarak
+  yönlendirme takip ediyordu, yani host allowlist'i yalnız ilk URL'i
+  koruyordu — tek bir `Location` başlığı bu komutları yeniden "dosya sistemi
+  bağlı genel amaçlı proxy" hâline getiriyordu. Artık her sıçrama aynı
+  kontrolden geçiyor (en fazla 5). (2) Gövde `bytes()` ile tümüyle belleğe
+  alınıyordu — 4K klip için birkaç yüz MB, üstelik sınırsız. Artık geldikçe
+  diske yazılıyor, 1 GiB tavanı var, yarım kalan `.part` siliniyor.
+- **IPC:** üç pipe instance'ı + `PIPE_REJECT_REMOTE_CLIENTS`; istemcide
+  meşgul pipe için yeniden deneme. "Motor çalışmıyor" yanılması bitti.
+- **Tauri komutları `(async)`** — bloklayan pipe/disk G/Ç artık main
+  thread'de değil.
+- **Video okuyucu processor'sız açılıyor**, yalnız gerekince (P010 ya da
+  ölçek) processor'lu yeniden kuruluyor. `MFStartup` süreç başına bir kez,
+  kamera eklentileri kapalı.
+- **Ses görünmeyince gerçekten duruyor** (eskiden sessizce çözmeye devam
+  ediyordu).
+- **`session.txt`'te tek bozuk satır tüm oturumu çöpe atıyordu** (`?` döngü
+  içindeydi) — boş bir satır yeterdi. Ayrıştırma `parse()`'a ayrıldı ve
+  testlendi.
+
+**UI tarafı:**
+- Kitaplık ızgarası ekran dışındaki karoların medya elemanını söküyor —
+  elli üstü öğede tarayıcı çözücü sınırı.
+- `.gif` `<video>`'ya gidiyordu, yani motorun oynattığı her GIF kitaplıkta
+  "okunamadı" karosu olarak duruyordu.
+- Kaydırıcılar yalnız `mouseup` ile işleniyordu: klavyeyle oynatmak hiçbir
+  şey göndermiyordu, iz dışında bırakılan sürükleme kayboluyordu.
+- Pencere tepsideyken yoklama duruyor (gizli WebView zamanlayıcılarını
+  çalıştırmaya devam ediyor).
+- Ekran listesi artık `status`'taki ekran sayısı değiştiğinde yenileniyor.
+
+---
+
+## 2026-08-26 — On bir iş, tek oturum
+
+- **Pil politikası** (`power/battery.rs`): pilde ayrı fps tavanı, pil
+  tasarrufunda tamamen dondurma. Gerekçe: decisions.md.
+- **Ses ducking** (`audio/duck.rs`): başka bir uygulama duyulur ses
+  çalarken duvar kağıdının sesi %12'ye iniyor, 200 ms rampayla.
+- **Gizli bildirim penceresi** (`compositor/notify.rs`): ekran değişimi,
+  uyanma ve üç global kısayol. Yerleşim gerçekten değiştiyse bütün sahne
+  (caps dahil) yeniden kuruluyor; Explorer yeniden başlarsa WorkerW da
+  yeniden bulunuyor.
+- **Monitör başına** fit/görünüm/kare hızı; **span** (tek duvar kağıdı bütün
+  masaüstüne); **crossfade**; **oynatma hızı** 0.25-2.0x.
+- **Bulunan hata:** `redraw` bayrağı hiçbir yerde temizlenmiyordu — bir kez
+  set edilen hedef sonsuza dek her tick'te present ediyordu. Başarılı
+  sunumdan sonra temizleniyor artık; "duran kare bedava" sözü ancak şimdi
+  doğru.
+- **Explorer sağ tık menüsü** (`shell.rs`) + `--set <dosya>`: pencere
+  açmadan, yalnız motora bir satır.
+- **`.muivly` paketi** (`pack.rs`): elle yazılmış store-only zip, bağımlılık
+  yok, akışlı okuma/yazma.
+- **Kodek farkındalıklı hata mesajı**: AV1/HEVC için "Store eklentisini kur"
+  ile "bu GPU çözemiyor" ayrıldı.
+- **winget manifestleri** (`packaging/winget/`), release iş akışında sürüm ve
+  SHA256 ile dolduruluyor.
+- IPC protokolü genişledi: `power`, `speed`, `fade`, `span`, `hotkeys`,
+  `freeze`, `own`; status'a pil/duck/hız alanları eklendi. Oturum dosyası
+  hepsini saklıyor ve eski dosyaları hâlâ okuyor.
+- Test sayısı 49 → 60 (çekirdek) + 14 (UI). CI artık UI crate'inde de
+  `cargo test` çalıştırıyor.
