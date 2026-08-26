@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["wallpaper-core"]
+# The UI is its own workspace: CI checks the engine, and pulling Tauri's
+# dependency tree in to do that would multiply the build time.
+exclude = ["wallpaper-ui"]
 
 [profile.release]
 # Binary size matters: this ships to users on old machines.

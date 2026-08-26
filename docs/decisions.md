@@ -240,3 +240,40 @@ belirler; hiçbiri görünmüyorsa decoder hiç çağrılmaz.
 yapılıyordu — monitör tamamen kapalıyken bile her frame çözülüyordu. Bu,
 projenin en temel vaadinin ("görünmüyorsa iş yok") sessizce ihlaliydi.
 Ölçüm farkı: kapalıyken %13.65 → %0.39 CPU.
+
+---
+
+## 2026-08-26 — IPC protokolü: satır tabanlı metin, JSON değil
+
+**Karar:** wallpaper-core ↔ wallpaper-ui protokolü satır başına bir UTF-8
+mesaj. Komutlar: `status`, `monitors`, `set <path>`, `clear`, `fps <n>`,
+`quit`. Cevaplar `ok ...` veya `err ...`.
+
+**Gerekçe:** Mesaj kümesi altı komut. serde + serde_json core'a ~300 KB
+binary ve bir bağımlılık ekliyor; karşılığında bu boyutta bir protokol için
+kazanç yok. Ayrıca metin protokolü elle test edilebiliyor (PowerShell'den
+pipe'a bağlanıp yazmak yeterli), bu da hata ayıklamayı kolaylaştırıyor.
+Core'un bağımlılık sayısı 1'de kalıyor (`windows`).
+
+**Ne zaman değişir:** komut sayısı bir düzineyi geçerse veya iç içe/yapısal
+veri taşımak gerekirse serde'ye geçilir. UI tarafında serde zaten var —
+oradaki WebView maliyeti yanında hiç kalır.
+
+**Not:** `set <path>` argümanı satır sonuna kadar okunuyor, tırnak yok.
+Windows yollarında boşluk kural, istisna değil.
+
+---
+
+## 2026-08-26 — X'e basmak pencereyi tepsiye küçültür
+
+**Karar:** Ayar penceresinin kapatma düğmesi uygulamayı kapatmaz; pencereyi
+gizler ve sistem tepsisinde kalır. Çıkış tepsi menüsünden.
+
+**Gerekçe:** Motor zaten ayrı bir işlem, yani UI kapansa da duvar kağıdı
+çalışmaya devam ediyor. Ama X'e basan kullanıcı uygulamanın "hâlâ orada"
+olmasını bekliyor — her tepsi uygulaması böyle davranıyor. Gerçekten
+kapatmak, sonra tekrar açmak için Başlat menüsüne gitmek gerektirirdi.
+
+**Not:** Tepsi menüsündeki "Çıkış" yalnız UI'ı kapatıyor. Motoru durdurmak
+ayrı bir eylem (`quit` komutu) — kullanıcı ayar panelini kapattı diye
+duvar kağıdı kaybolmamalı.

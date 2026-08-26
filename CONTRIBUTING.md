@@ -49,6 +49,16 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait
 cargo build
 ```
 
+The settings window is a separate Cargo workspace and needs Node 24+:
+
+```bash
+cd wallpaper-ui && npm install && npx tauri build --no-bundle
+```
+
+Build the UI with `tauri build`, not `cargo build`: a plain cargo build marks
+it as a development build, and the window then tries to load the Vite dev
+server instead of the bundled files.
+
 ## Before you open a pull request
 
 ```bash

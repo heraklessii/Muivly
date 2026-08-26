@@ -126,3 +126,34 @@ mimari etkisi olan veya sonraki session'ın bilmesi gereken şeyler.
 - **Zayıf nokta: RAM ~265 MB ve 75 thread.** Hedefin çok üstünde.
   Büyük kısmı MF source reader'ın thread havuzu ve decode buffer'ları;
   bu makinede iki decoder çalıştığı için en kötü durum. Sıradaki iş bu.
+
+## 2026-08-26 — Ayar paneli (Tauri v2) ve IPC
+
+- `ipc/` yazıldı: named pipe sunucusu (`\.\pipe\muivly`), satır tabanlı
+  metin protokolü. Komutlar: `status`, `monitors`, `set`, `clear`, `fps`,
+  `quit`. serde YOK — gerekçe decisions.md'de.
+- Compositor artık çalışırken komut alıyor: video değiştirme cihazı/pencereyi
+  yıkmadan yapılıyor (`Renderer::set_video`), fps anında değişiyor.
+- `wallpaper-ui/` kuruldu: Tauri v2 + React + Vite. Ortak Mui teması
+  (`docs/design_system.md`) `src/styles.css`'e uygulandı, Outfit fontu
+  Muita'dan kopyalandı (`latin` + `latin-ext`).
+- **X tuşu pencereyi tepsiye küçültüyor**, uygulamayı kapatmıyor. Tepsi
+  menüsü: "Muivly'yi aç" / "Çıkış". Sol tık pencereyi geri getiriyor.
+  Doğrulandı: WM_CLOSE sonrası pencere gizli, işlem ayakta, motor etkilenmedi.
+- İkon üretildi (koyu yuvarlak kare + teal oynat üçgeni), png + ico.
+- `wallpaper-ui` kök workspace'ten `exclude` edildi ve kendi workspace'i oldu:
+  CI motoru kontrol ederken Tauri'nin bağımlılık ağacını çekmesin.
+- CI'a ikinci job (`ui`) eklendi: npm ci + tsc/vite build + fmt + clippy.
+  release.yml artık NSIS installer da üretiyor; core exe'si `--config` ile
+  resource olarak enjekte ediliyor (tauri.conf.json'a yazılırsa `cargo build`
+  dosya yokken kırılıyor — build script resource'ları doğruluyor).
+
+**Yolda çıkan iki hata:**
+- Pipe sunucusu istemci kopunca 200ms uyuyordu; UI o boşlukta bağlanamıyordu.
+  Artık normal kopma hata sayılmıyor (`ERROR_BROKEN_PIPE` → EOF) ve döngü
+  anında yeni instance açıyor.
+- UI'da `monitors` isteği başarısız olunca `catch` bloğu `status`'ü de
+  siliyordu → "Motor çalışmıyor" görünüyordu. İki istek ayrıldı.
+- `cargo build --release` Tauri'yi dev moduna sokuyor (`cfg(dev)`), uygulama
+  `localhost:5183`'ü yüklemeye çalışıyor. Üretim derlemesi `npx tauri build`
+  ile yapılmalı.

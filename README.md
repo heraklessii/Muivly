@@ -6,11 +6,10 @@ A native live wallpaper engine for Windows, built for machines that struggle wit
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 > **Status: early development.** Muivly plays a video wallpaper on every
-> monitor, decoded on the GPU, and stops decoding entirely when nothing is
-> visible. There is no settings UI yet — you pass a file path on the command
-> line — and memory use is well above where it needs to be. There is no
-> release to download. Star or watch the repo if you want to know when there
-> is.
+> monitor, decoded on the GPU, stops decoding entirely when nothing is
+> visible, and has a settings window that lives in the system tray. Memory
+> use is still well above where it needs to be. There is no release to
+> download yet — star or watch the repo if you want to know when there is.
 
 ## Why
 
@@ -52,7 +51,9 @@ essentially anything from 2014 onward, including integrated graphics.
 
 ## Trying it
 
-Build it (see below), then point it at a video file:
+Two processes: `muivly-core.exe` is the engine and `muivly-ui.exe` is the
+settings window. The UI can start the engine for you, or run the engine
+directly and point it at a video file:
 
 ```bash
 muivly-core "C:\path\to\wallpaper.mp4"
@@ -108,12 +109,21 @@ Tools with the "Desktop development with C++" workload and the Windows SDK).
 git clone https://github.com/heraklessii/Muivly.git
 ```
 
+The engine:
+
 ```bash
 cargo build --release
 ```
 
-The binary lands in `target/release/muivly-core.exe`. It is about 120 KB and
-has exactly one dependency: the `windows` crate (Win32 API bindings).
+It lands in `target/release/muivly-core.exe`, about 200 KB, with exactly one
+dependency: the `windows` crate (Win32 API bindings).
+
+The settings window (needs Node 24+; it is a separate Cargo workspace, so the
+engine build above never pulls Tauri in):
+
+```bash
+cd wallpaper-ui && npm install && npx tauri build --no-bundle
+```
 
 ## Architecture
 
@@ -129,7 +139,8 @@ wallpaper-core/   Rust native binary. The engine. Keeps running — and keeps it
   ipc/            Named pipe server.
 
 wallpaper-ui/     Tauri v2 + React. The settings panel, and nothing else.
-                  Wallpapers are never rendered here.
+                  Wallpapers are never rendered here. Closing the window
+                  hides it to the tray; the engine is untouched either way.
 ```
 
 Design notes and the reasoning behind each choice live in [`docs/`](docs/) —
@@ -142,8 +153,8 @@ Design notes and the reasoning behind each choice live in [`docs/`](docs/) —
 - [x] Occlusion detection — decoding and rendering stop when nothing is visible
 - [x] Media Foundation decoder — hardware H.264/HEVC/VP9/AV1, zero-copy
 - [ ] Bring memory down (currently ~265 MB with video; too high)
-- [ ] Wallpaper picker and per-monitor assignment
-- [ ] Settings UI
+- [x] Settings UI — Tauri v2, closes to the system tray
+- [ ] Per-monitor wallpaper assignment
 - [ ] First release
 - [ ] Measured RAM/CPU comparison against the alternatives
 

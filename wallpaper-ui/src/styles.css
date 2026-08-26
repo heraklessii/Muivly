@@ -1,0 +1,439 @@
+/*
+ * ============================================================================
+ * MUIVLY — arayüz tasarım sistemi (bkz. docs/design_system.md)
+ * ============================================================================
+ *
+ * Palet Muita ve Muitoon ile ortak: teal #2dd4bf vurgu, #0f1115 zemin,
+ * Outfit font. Jeton isimleri Muita'nınkiyle aynı.
+ *
+ * Kural: bileşene renk/ölçü sabiti YAZILMAZ, hepsi buradan gelir.
+ */
+
+/* ---------------------------------------------------------------------------
+ * Font — Outfit, kuruluma gömülü. CDN yok: Tauri'nin CSP'si uzak kaynağa
+ * zaten izin vermiyor ve uygulama tamamen çevrimdışı çalışıyor.
+ * `latin-ext` Türkçe için şart (ğ ş İ ı Ş Ğ).
+ * ------------------------------------------------------------------------- */
+
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('./assets/fonts/outfit-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('./assets/fonts/outfit-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ---------------------------------------------------------------------------
+ * Jetonlar
+ * ------------------------------------------------------------------------- */
+
+:root,
+:root[data-theme='dark'] {
+  --bg: #0f1115;
+  --bg-panel: #181b22;
+  --bg-elevated: #20242d;
+  --bg-sunken: #0b0d11;
+  --border: #262b35;
+  --border-strong: #333a47;
+  --text: #e8eaed;
+  --text-muted: #8b93a3;
+
+  --accent: #2dd4bf;
+  --accent-strong: #5eead4;
+  --accent-soft: rgb(45 212 191 / 12%);
+  --accent-line: rgb(45 212 191 / 34%);
+  /* Teal AÇIK bir renk: üstündeki yazı koyu olmak zorunda. */
+  --on-accent: #04211d;
+
+  --error: #ff7a6b;
+  --warning: #fbbf24;
+  --ok: #a3e635;
+
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-2: 0 8px 24px -6px rgb(0 0 0 / 60%);
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #eef1f5;
+  --bg-panel: #ffffff;
+  --bg-elevated: #f2f4f8;
+  --bg-sunken: #e7eaf0;
+  --border: #dde1e9;
+  --border-strong: #c3c9d4;
+  --text: #12151a;
+  --text-muted: #5d6675;
+
+  --accent: #0d9488;
+  --accent-strong: #0f766e;
+  --accent-soft: rgb(13 148 136 / 10%);
+  --accent-line: rgb(13 148 136 / 30%);
+  --on-accent: #ffffff;
+
+  --error: #c0392b;
+  --warning: #b45309;
+  --ok: #4d7c0f;
+
+  --shadow-1: 0 1px 2px rgb(18 21 26 / 8%);
+  --shadow-2: 0 8px 24px -6px rgb(18 21 26 / 14%);
+
+  color-scheme: light;
+}
+
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 22px;
+  --space-6: 32px;
+
+  --font-ui: 'Outfit', 'Segoe UI', system-ui, sans-serif;
+  --font-xs: 11px;
+  --font-sm: 12px;
+  --font-md: 13px;
+  --font-lg: 15px;
+  --font-xl: 19px;
+
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  --control-height: 32px;
+
+  --ease: cubic-bezier(0.2, 0.6, 0.3, 1);
+  --t-fast: 110ms;
+  --t-med: 180ms;
+}
+
+/* ---------------------------------------------------------------------------
+ * Taban
+ * ------------------------------------------------------------------------- */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--font-md);
+  line-height: 1.5;
+  letter-spacing: 0.005em;
+  /* Sayaçlar (fps, çözünürlük) değişirken zıplamasın. */
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Kromun kendisi seçilemiyor, ama BİLGİ olan metin kopyalanabilmeli. */
+.path,
+.error-text {
+  user-select: text;
+}
+
+/* Form elemanları fontu miras almaz (tarayıcı Arial'a düşer). */
+button,
+input,
+select {
+  font-family: inherit;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--radius-pill);
+}
+
+/* ---------------------------------------------------------------------------
+ * Kabuk
+ * ------------------------------------------------------------------------- */
+
+.app {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-6);
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.wordmark {
+  font-size: var(--font-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.wordmark span {
+  color: var(--accent);
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* Durum rozeti — üç hâl: oynuyor, duraklatıldı, motor kapalı. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-height);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.pill[data-state='playing'] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pill[data-state='playing'] .dot {
+  background: var(--accent);
+}
+
+.pill[data-state='paused'] .dot {
+  background: var(--warning);
+}
+
+.pill[data-state='off'] .dot {
+  background: var(--error);
+}
+
+/* ---------------------------------------------------------------------------
+ * Kartlar
+ * ------------------------------------------------------------------------- */
+
+.card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  margin-bottom: var(--space-4);
+}
+
+.card-title {
+  font-size: var(--font-lg);
+  font-weight: 600;
+  margin: 0 0 var(--space-1);
+}
+
+.card-sub {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  margin: 0 0 var(--space-4);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* ---------------------------------------------------------------------------
+ * Kontroller
+ * ------------------------------------------------------------------------- */
+
+button {
+  height: var(--control-height);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: var(--font-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent-line);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+/* ---------------------------------------------------------------------------
+ * Wallpaper kutusu
+ * ------------------------------------------------------------------------- */
+
+.current {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: var(--space-4);
+  min-height: 52px;
+}
+
+.current .path {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-sm);
+  /* Uzun yollar sarmasın, baştan kırpılsın — dosya adı sonda. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.current .none {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+/* ---------------------------------------------------------------------------
+ * Monitör listesi
+ * ------------------------------------------------------------------------- */
+
+.monitors {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.monitor {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.monitor-name {
+  font-weight: 600;
+  font-size: var(--font-md);
+}
+
+.monitor-meta {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+.badge {
+  font-size: var(--font-xs);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-line);
+}
+
+/* ---------------------------------------------------------------------------
+ * fps kaydırıcı
+ * ------------------------------------------------------------------------- */
+
+input[type='range'] {
+  flex: 1;
+  accent-color: var(--accent);
+  height: var(--control-height);
+}
+
+.fps-value {
+  min-width: 68px;
+  text-align: right;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* ---------------------------------------------------------------------------
+ * Boş / hata durumları
+ * ------------------------------------------------------------------------- */
+
+.empty {
+  text-align: center;
+  padding: var(--space-6) var(--space-4);
+}
+
+.empty p {
+  color: var(--text-muted);
+  margin: 0 0 var(--space-4);
+}
+
+.error-text {
+  color: var(--error);
+  font-size: var(--font-sm);
+  margin-top: var(--space-3);
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  margin-top: var(--space-3);
+}

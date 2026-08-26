@@ -9,9 +9,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    # Muivly is Win32 all the way down (DXGI, D3D11, WorkerW). There is
-    # nothing meaningful to check on another OS.
+  engine:
+    # Muivly is Win32 all the way down (DXGI, D3D11, Media Foundation,
+    # WorkerW). There is nothing meaningful to check on another OS.
     runs-on: windows-latest
 
     steps:
@@ -40,3 +40,43 @@ jobs:
         # virtual display adapter, which is exactly the "no hardware decoder"
         # path real users on old machines can hit.
         run: cargo run --release -- --caps
+
+  ui:
+    # Separate job, and separate Cargo workspace: pulling Tauri's dependency
+    # tree into the engine check would multiply its build time for no gain.
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: wallpaper-ui
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: wallpaper-ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wallpaper-ui/src-tauri
+
+      - run: npm ci
+
+      - name: Frontend build
+        # Runs tsc first, so a type error fails here rather than at bundle time.
+        run: npm run build
+
+      - name: Format
+        run: cargo fmt --all -- --check
+        working-directory: wallpaper-ui/src-tauri
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: wallpaper-ui/src-tauri

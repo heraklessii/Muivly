@@ -11,6 +11,8 @@ project_overview.md bölümüne referans.
 
 ## Şimdi (aktif faz)
 
+- [ ] Monitör başına ayrı duvar kağıdı ataması (UI listesi hazır, motor tarafı
+      tek video destekliyor)
 - [ ] **RAM/thread düşürme.** ~265 MB ve 75 thread, hedefin çok üstünde.
       Nereye gittiğini ölç: MF source reader thread havuzu mu, decode
       buffer sayısı mı, iki decoder mı. Denenecekler: async callback yerine
@@ -21,13 +23,8 @@ project_overview.md bölümüne referans.
 
 ## Sırada (henüz başlanmadı)
 
-
 - [ ] `caps` sonucunun cache'lenmesi + `WM_DISPLAYCHANGE` ile invalidation
 - [ ] Monitör takma/çıkarma sırasında yüzeylerin yeniden oluşturulması
-- [ ] wallpaper-core ↔ wallpaper-ui named pipe IPC protokolü taslağı
-- [ ] Tauri UI iskeleti: wallpaper seçici, monitör eşleme ekranı
-      (tema: `docs/design_system.md`, Outfit fontu Muita'dan kopyalanacak)
-- [ ] Installer (`Muivly-x.y.z-setup.exe`) — Tauri UI çıkınca release.yml'e ikinci job
 - [ ] WE ile RAM/CPU karşılaştırma benchmark videosu/görseli (pazarlama)
 
 ## Backlog (öncelik yok, fikir aşaması)

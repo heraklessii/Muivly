@@ -86,7 +86,7 @@ struct Target {
 }
 
 pub struct Renderer {
-    _device: ID3D11Device,
+    device: ID3D11Device,
     context: ID3D11DeviceContext,
     vs: ID3D11VertexShader,
     /// The placeholder gradient, used when there is no video to play.
@@ -153,7 +153,7 @@ impl Renderer {
             };
 
             Ok(Self {
-                _device: device,
+                device,
                 context,
                 vs,
                 ps_gradient,
@@ -164,6 +164,17 @@ impl Renderer {
                 decoder,
             })
         }
+    }
+
+    /// Swap the wallpaper without tearing down the device, its swap chains
+    /// or its windows — the desktop keeps showing the old frame until the
+    /// first new one arrives.
+    pub fn set_video(&mut self, video: Option<&Path>) -> windows::core::Result<()> {
+        self.decoder = match video {
+            Some(path) => Some(VideoDecoder::open(&self.device, path)?),
+            None => None,
+        };
+        Ok(())
     }
 
     /// The video's pixel dimensions, if a video is playing.

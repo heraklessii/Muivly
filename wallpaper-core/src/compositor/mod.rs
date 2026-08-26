@@ -8,6 +8,8 @@ mod workerw;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HWND;
@@ -17,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::caps::GpuProfile;
+use crate::ipc::{Command, Status};
 use render::Renderer;
 use window::Surface;
 
@@ -30,7 +33,12 @@ pub fn stop() {
 }
 
 /// Create a surface for every monitor and render until stopped.
-pub fn run(profile: &GpuProfile, video: Option<&Path>) -> windows::core::Result<()> {
+pub fn run(
+    profile: &GpuProfile,
+    video: Option<&Path>,
+    commands: Receiver<Command>,
+    status: Arc<Mutex<Status>>,
+) -> windows::core::Result<()> {
     let target = workerw::find().ok_or_else(|| {
         windows::core::Error::new(
             windows::Win32::Foundation::E_FAIL,
@@ -67,9 +75,16 @@ pub fn run(profile: &GpuProfile, video: Option<&Path>) -> windows::core::Result<
         renderers.push(renderer);
     }
 
-    let fps = profile.rec.target_fps.max(1);
-    let frame_time = Duration::from_secs_f64(1.0 / fps as f64);
+    let mut fps = profile.rec.target_fps.max(1);
+    let mut frame_time = Duration::from_secs_f64(1.0 / fps as f64);
+    let mut current_video = video.map(|p| p.to_path_buf());
     println!("rendering at {fps} fps — Ctrl+C to stop");
+
+    {
+        let mut status = status.lock().expect("status mutex poisoned");
+        status.fps = fps;
+        status.video = current_video.clone();
+    }
 
     // How often to check whether a covered desktop has become visible again.
     // Half a second is imperceptible to a user alt-tabbing out of a game, and
@@ -83,6 +98,38 @@ pub fn run(profile: &GpuProfile, video: Option<&Path>) -> windows::core::Result<
         let frame_start = Instant::now();
 
         pump_messages();
+
+        // Apply whatever the UI asked for since the last frame. Draining
+        // rather than handling one keeps a burst of clicks from taking a
+        // frame each.
+        for command in commands.try_iter() {
+            match command {
+                Command::SetVideo(path) => {
+                    for renderer in &mut renderers {
+                        renderer.set_video(Some(&path))?;
+                    }
+                    println!("wallpaper: {}", path.display());
+                    current_video = Some(path);
+                }
+                Command::Clear => {
+                    for renderer in &mut renderers {
+                        renderer.set_video(None)?;
+                    }
+                    println!("wallpaper: cleared");
+                    current_video = None;
+                }
+                Command::Fps(n) => {
+                    fps = n;
+                    frame_time = Duration::from_secs_f64(1.0 / n as f64);
+                    println!("fps: {n}");
+                }
+                Command::Quit => stop(),
+            }
+
+            let mut status = status.lock().expect("status mutex poisoned");
+            status.fps = fps;
+            status.video = current_video.clone();
+        }
 
         let elapsed = start.elapsed();
         let mut drawn = 0;
@@ -104,6 +151,7 @@ pub fn run(profile: &GpuProfile, video: Option<&Path>) -> windows::core::Result<
                 }
             );
             was_paused = paused;
+            status.lock().expect("status mutex poisoned").paused = paused;
         }
 
         // Sleeping the remainder is what keeps this cheap. A wallpaper that

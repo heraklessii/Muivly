@@ -1,3 +1,4 @@
 /target
 node_modules/
 dist/
+wallpaper-ui/src-tauri/target/

@@ -8,6 +8,7 @@ mod ipc;
 mod power;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use windows::core::BOOL;
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
@@ -84,8 +85,15 @@ fn run(video: Option<PathBuf>) {
         let _ = SetConsoleCtrlHandler(Some(ctrl_handler), true);
     }
 
+    // The settings UI talks to this pipe. It is served on its own thread so a
+    // UI that stalls mid-message cannot stall the wallpaper.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let status = Arc::new(Mutex::new(ipc::Status::default()));
+    ipc::serve(profile.clone(), Arc::clone(&status), tx);
+    println!("ipc: listening on {}", ipc::PIPE_NAME);
+
     let path = video.filter(|_| playable);
-    if let Err(e) = compositor::run(&profile, path.as_deref()) {
+    if let Err(e) = compositor::run(&profile, path.as_deref(), rx, status) {
         eprintln!("compositor failed: {e}");
         std::process::exit(1);
     }
