@@ -6,18 +6,47 @@ import {
   loadStore,
   resolve,
   saveStore,
+  withPaths,
   type Assignment,
   type Store,
 } from './store'
+import Browse from './views/Browse'
 import Library from './views/Library'
 import Monitors from './views/Monitors'
+import Onboarding from './views/Onboarding'
 import Playlists from './views/Playlists'
 import Settings from './views/Settings'
 
-type View = 'library' | 'playlists' | 'monitors' | 'settings'
+type View = 'library' | 'browse' | 'playlists' | 'monitors' | 'settings'
+
+/** One 16px line icon. The paths are drawn on a 16-unit grid so they line up
+ *  with the text next to them without any per-icon nudging. */
+function Icon({ id }: { id: View }) {
+  const paths: Record<View, string> = {
+    library: 'M2.5 3.5h11v9h-11z M2.5 6.5h11',
+    browse: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2 M2.4 8h11.2 M8 2.2a9 9 0 0 1 0 11.6 M8 2.2a9 9 0 0 0 0 11.6',
+    playlists: 'M2.5 4h7 M2.5 8h7 M2.5 12h5 M11.5 6.5v6 M11.5 6.5l2.5-1v6',
+    monitors: 'M2.5 3.5h11v7h-11z M6 13h4 M8 10.5V13',
+    settings: 'M8 5.6a2.4 2.4 0 1 0 0 4.8 2.4 2.4 0 0 0 0-4.8 M8 1.6v1.6 M8 12.8v1.6 M1.6 8h1.6 M12.8 8h1.6 M3.5 3.5l1.1 1.1 M11.4 11.4l1.1 1.1 M12.5 3.5l-1.1 1.1 M4.6 11.4l-1.1 1.1',
+  }
+
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <path
+        d={paths[id]}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
 
 const NAV: { id: View; label: string }[] = [
   { id: 'library', label: 'Kitaplık' },
+  { id: 'browse', label: 'Keşfet' },
   { id: 'playlists', label: 'Listeler' },
   { id: 'monitors', label: 'Ekranlar' },
   { id: 'settings', label: 'Ayarlar' },
@@ -47,8 +76,10 @@ export default function App() {
   const monitorsRef = useRef<Monitor[]>([])
 
   const refresh = useCallback(async () => {
+    let next: EngineStatus
     try {
-      setStatus(await engine.status())
+      next = await engine.status()
+      setStatus(next)
     } catch {
       setStatus(null)
       setMonitors([])
@@ -57,9 +88,15 @@ export default function App() {
     }
 
     // Fetched separately, and never allowed to invalidate the status above:
-    // the engine serves one connection at a time, so a second request can
-    // legitimately arrive a moment too early and fail on its own.
-    if (monitorsRef.current.length === 0) {
+    // a second request can legitimately arrive a moment too early and fail
+    // on its own.
+    //
+    // Refetched when the counts disagree as well as when there is nothing:
+    // status names every screen the engine knows about, so a display being
+    // plugged in or unplugged shows up there first. Without this the screen
+    // list stayed as it was at launch and "apply to this monitor" pointed at
+    // a display that had been unplugged an hour ago.
+    if (monitorsRef.current.length !== next.monitors.length) {
       try {
         const list = await engine.monitors()
         monitorsRef.current = list
@@ -71,9 +108,32 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    void refresh()
-    const timer = setInterval(() => void refresh(), POLL_MS)
-    return () => clearInterval(timer)
+    // Closing the window only hides it — the app lives in the tray — and a
+    // hidden WebView keeps its timers running. Polling an engine nobody is
+    // looking at is a pipe round trip and a re-render of the whole library,
+    // several times a minute, for a window that is not on screen.
+    let timer: number | null = null
+
+    const stop = () => {
+      if (timer !== null) clearInterval(timer)
+      timer = null
+    }
+
+    const start = () => {
+      if (timer !== null) return
+      void refresh()
+      timer = window.setInterval(() => void refresh(), POLL_MS)
+    }
+
+    const onVisibility = () => (document.hidden ? stop() : start())
+
+    onVisibility()
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [refresh])
 
   // Persisting is debounced: renaming a wallpaper types one character at a
@@ -88,7 +148,11 @@ export default function App() {
     [],
   )
 
-  /** Record an assignment and tell the engine about it in one step. */
+  /**
+   * Record an assignment and tell the engine about it in one step.
+   * Throws on failure, so a caller with its own place to put an error can
+   * show one; `assignShown` below is the version for callers without.
+   */
   const assign = useCallback(
     async (monitorName: string, assignment: Assignment) => {
       const next: Store = {
@@ -100,13 +164,25 @@ export default function App() {
       try {
         await engine.setPlaylist(monitorName, resolve(next, assignment))
         setError(null)
-      } catch (e) {
-        setError(String(e))
+      } finally {
+        await refresh()
       }
-      await refresh()
     },
     [store, persist, refresh],
   )
+
+  const assignShown = useCallback(
+    (monitorName: string, assignment: Assignment) => {
+      void assign(monitorName, assignment).catch((e) => setError(String(e)))
+    },
+    [assign],
+  )
+
+  const startEngine = useCallback(async () => {
+    await engine.start()
+    // Give it a moment to open its pipe before the next poll.
+    setTimeout(() => void refresh(), 800)
+  }, [refresh])
 
   // Re-apply everything once the engine appears, so a wallpaper survives the
   // engine being restarted without the user touching anything.
@@ -135,6 +211,22 @@ export default function App() {
     return <div className="app-loading" />
   }
 
+  // The walkthrough owns the whole window: before there is a wallpaper the
+  // sidebar has nothing worth navigating to.
+  if (!store.onboarded) {
+    return (
+      <Onboarding
+        store={store}
+        status={status}
+        monitors={monitors}
+        onChange={persist}
+        onStartEngine={startEngine}
+        onApply={(monitorName, itemId) => assign(monitorName, { kind: 'item', id: itemId })}
+        onFinish={() => persist({ ...store, onboarded: true })}
+      />
+    )
+  }
+
   return (
     <div className="shell">
       <nav className="sidebar">
@@ -150,35 +242,65 @@ export default function App() {
               data-active={view === entry.id}
               onClick={() => setView(entry.id)}
             >
+              <Icon id={entry.id} />
               {entry.label}
             </button>
           ))}
         </div>
 
-        <div className="pill sidebar-status" data-state={!status ? 'off' : status.paused ? 'paused' : 'playing'}>
-          <span className="dot" />
-          {!status ? 'Motor kapalı' : status.paused ? 'Duraklatıldı' : 'Oynatılıyor'}
+        <div className="sidebar-foot">
+          <div
+            className="pill"
+            data-state={!status ? 'off' : status.paused ? 'paused' : 'playing'}
+          >
+            <span className="dot" />
+            {!status ? 'Motor kapalı' : status.paused ? 'Duraklatıldı' : 'Oynatılıyor'}
+          </div>
+
+          {/* What the engine is costing, where it is always in sight — the
+              whole point of Muivly is that these numbers stay small. */}
+          {status && (
+            <div className="sidebar-meter">
+              <span>
+                {status.real_fps.toFixed(0)}
+                <em>fps</em>
+              </span>
+              <span>
+                {status.cpu.toFixed(0)}
+                <em>% cpu</em>
+              </span>
+              <span>
+                {status.ram_mb.toFixed(0)}
+                <em>MB</em>
+              </span>
+            </div>
+          )}
         </div>
       </nav>
 
       <main className="content">
-        {!status ? (
-          <div className="card empty">
-            <h2 className="card-title">Motor çalışmıyor</h2>
-            <p>
-              Duvar kağıdı motoru ayrı bir işlem olarak çalışır. Bu pencereyi
-              kapatsan da açık kalır.
-            </p>
+        {/* The engine being down stops wallpapers playing, not the app
+            working: the library, downloads and playlists are all just files
+            and state. So it is a banner rather than a wall. */}
+        {!status && (
+          <div className="banner">
+            <div>
+              <div className="banner-title">Motor çalışmıyor</div>
+              <p className="muted">
+                Duvar kağıdı motoru ayrı bir işlem olarak çalışır. Bu pencereyi
+                kapatsan da açık kalır. Kitaplığını şimdi de düzenleyebilirsin;
+                ekrana uygulamak için motor gerekiyor.
+              </p>
+            </div>
+            <div className="spacer" />
             <button
               className="primary"
               disabled={starting}
               onClick={async () => {
                 setStarting(true)
                 try {
-                  await engine.start()
+                  await startEngine()
                   setError(null)
-                  // Give it a moment to open its pipe before the next poll.
-                  setTimeout(() => void refresh(), 800)
                 } catch (e) {
                   setError(String(e))
                 } finally {
@@ -186,56 +308,87 @@ export default function App() {
                 }
               }}
             >
-              Motoru başlat
+              {starting ? 'Başlatılıyor…' : 'Motoru başlat'}
             </button>
-            {error && <p className="error-text">{error}</p>}
           </div>
-        ) : (
-          <>
-            {error && <p className="error-text">{error}</p>}
-
-            {view === 'library' && (
-              <Library
-                store={store}
-                monitors={monitors}
-                onChange={persist}
-                onAssign={(monitorName, itemId) =>
-                  void assign(monitorName, { kind: 'item', id: itemId })
-                }
-              />
-            )}
-
-            {view === 'playlists' && (
-              <Playlists
-                store={store}
-                monitors={monitors}
-                onChange={persist}
-                onAssignPlaylist={(monitorName, playlistId) =>
-                  void assign(monitorName, { kind: 'playlist', id: playlistId })
-                }
-              />
-            )}
-
-            {view === 'monitors' && (
-              <Monitors
-                store={store}
-                monitors={monitors}
-                status={status}
-                onAssign={(monitorName, assignment) => void assign(monitorName, assignment)}
-                onRefresh={() => void refresh()}
-              />
-            )}
-
-            {view === 'settings' && (
-              <Settings
-                store={store}
-                status={status}
-                onChange={persist}
-                onRefresh={() => void refresh()}
-              />
-            )}
-          </>
         )}
+
+        {error && <p className="error-text">{error}</p>}
+
+        {/* The engine reports its own failures — a codec with no hardware
+            decoder, a file that moved. They belong next to whatever the UI
+            itself has to say. */}
+        {status?.error && <p className="error-text">{status.error}</p>}
+
+        {view === 'library' && (
+          <Library
+            store={store}
+            monitors={monitors}
+            onChange={persist}
+            onAssign={(monitorName, itemId) =>
+              assignShown(monitorName, { kind: 'item', id: itemId })
+            }
+          />
+        )}
+
+        {view === 'browse' && (
+          <Browse
+            have={store.items.map((item) => item.path)}
+            onDownloaded={(path, title) => {
+              const next = withPaths(store, [path])
+              if (next === store) return
+              // The site knows a better name for it than the file does.
+              persist({
+                ...next,
+                items: next.items.map((item) =>
+                  item.path === path ? { ...item, title } : item,
+                ),
+              })
+            }}
+          />
+        )}
+
+        {view === 'playlists' && (
+          <Playlists
+            store={store}
+            monitors={monitors}
+            onChange={persist}
+            onAssignPlaylist={(monitorName, playlistId) =>
+              assignShown(monitorName, { kind: 'playlist', id: playlistId })
+            }
+          />
+        )}
+
+        {/* These two are windows onto the running engine, so with no engine
+            there is nothing for them to show. */}
+        {view === 'monitors' &&
+          (status ? (
+            <Monitors
+              store={store}
+              monitors={monitors}
+              status={status}
+              onAssign={assignShown}
+              onRefresh={() => void refresh()}
+            />
+          ) : (
+            <div className="card empty">
+              <p>Ekran listesi motordan geliyor. Motoru başlat.</p>
+            </div>
+          ))}
+
+        {view === 'settings' &&
+          (status ? (
+            <Settings
+              store={store}
+              status={status}
+              onChange={persist}
+              onRefresh={() => void refresh()}
+            />
+          ) : (
+            <div className="card empty">
+              <p>Ayarlar motora yazılıyor. Motoru başlat.</p>
+            </div>
+          ))}
       </main>
     </div>
   )

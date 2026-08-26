@@ -237,6 +237,9 @@ textarea {
 }
 
 .nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   height: 36px;
   padding: 0 var(--space-3);
   border: 1px solid transparent;
@@ -262,6 +265,11 @@ textarea {
   border-color: var(--accent-line);
   color: var(--accent);
   font-weight: 600;
+}
+
+.nav-item svg {
+  flex-shrink: 0;
+  opacity: 0.85;
 }
 
 .content {
@@ -350,8 +358,32 @@ textarea {
 
 /* Pushed to the bottom of the sidebar. `margin-top: auto` rather than a
    spacer element: it survives the sidebar gaining or losing children. */
-.sidebar-status {
+.sidebar-foot {
   margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* Motorun maliyeti, hep göz önünde. */
+.sidebar-meter {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-sm);
+  font-weight: 600;
+}
+
+.sidebar-meter em {
+  font-style: normal;
+  font-weight: 400;
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+  margin-left: 2px;
 }
 
 /* ---------------------------------------------------------------------------
@@ -384,6 +416,27 @@ textarea {
 .card.empty {
   text-align: center;
   padding: var(--space-6);
+}
+
+/* Uyarı şeridi — motor kapalıyken içeriği gizlemeden üstte durur. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  background: var(--bg-panel);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+}
+
+.banner-title {
+  font-weight: 600;
+}
+
+.banner p {
+  margin: 2px 0 0;
+  max-width: 72ch;
 }
 
 .card.empty p {
@@ -589,55 +642,216 @@ input[type='range'] {
 }
 
 /* ---------------------------------------------------------------------------
- * Kitaplık ızgarası
+ * Duvar — Kitaplık ve Keşfet'in ortak kart ızgarası
+ *
+ * İki görünüm de aynı şeyi gösteriyor: 16:9 bir kare, üstünde adı. Kartın
+ * gövdesi resim; düğmeler imleç üstüne gelene kadar görünmüyor. Böylece
+ * ızgara "dosya listesi" değil, seçilecek görüntülerin duvarı oluyor.
  * ------------------------------------------------------------------------- */
 
-.grid {
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.wall {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
   gap: var(--space-4);
 }
 
-.tile {
+.wp {
+  position: relative;
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
-  transition: border-color var(--t-fast) var(--ease);
+  transition:
+    border-color var(--t-fast) var(--ease),
+    transform var(--t-med) var(--ease),
+    box-shadow var(--t-med) var(--ease);
 }
 
-.tile:hover {
+.wp:hover {
   border-color: var(--border-strong);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2);
 }
 
-.tile-body {
-  padding: var(--space-3) var(--space-3) var(--space-2);
-  min-width: 0;
+/* Şu an bir ekranda olan duvar kağıdı. */
+.wp[data-live='true'] {
+  border-color: var(--accent-line);
 }
 
-/* Başlık düğme: tıklayınca yeniden adlandırma alanına dönüşüyor. */
-.tile-title {
+.wp-media {
+  position: relative;
+  overflow: hidden;
+}
+
+.wp-media .thumb {
+  border-radius: 0;
+  transition: transform var(--t-med) var(--ease);
+}
+
+.wp:hover .wp-media .thumb {
+  transform: scale(1.04);
+}
+
+/* Köşe rozetleri: solda "ekranda", sağda tür/çözünürlük. */
+.wp-flag,
+.wp-kind {
+  position: absolute;
+  z-index: 2;
+  top: var(--space-2);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: calc(100% - var(--space-6));
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Resmin üstünde okunabilir kalsın diye kendi zemini var. */
+  backdrop-filter: blur(6px);
+}
+
+.wp-flag {
+  left: var(--space-2);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+}
+
+.wp-flag .dot {
+  background: var(--accent);
+}
+
+.wp-kind {
+  right: var(--space-2);
+  background: rgb(0 0 0 / 45%);
+  border: 1px solid rgb(255 255 255 / 14%);
+  color: #fff;
+}
+
+.wp-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: linear-gradient(to top, rgb(0 0 0 / 78%), rgb(0 0 0 / 40%));
+  opacity: 0;
+  /* Görünmezken tıklamayı da yutmasın. */
+  pointer-events: none;
+  transition: opacity var(--t-med) var(--ease);
+}
+
+.wp:hover .wp-overlay,
+.wp:focus-within .wp-overlay,
+.wp-overlay[data-busy='true'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.wp-overlay-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.wp-overlay button {
+  font-size: var(--font-sm);
+}
+
+/* Karanlık kaplamanın üstündeki ikincil düğmeler kendi zeminini taşıyor. */
+.wp-overlay button:not(.primary) {
+  background: rgb(255 255 255 / 10%);
+  border-color: rgb(255 255 255 / 22%);
+  color: #fff;
+}
+
+.wp-overlay button:not(.primary):hover:not(:disabled) {
+  background: rgb(255 255 255 / 18%);
+}
+
+.wp-overlay button.danger {
+  color: var(--error);
+}
+
+/* Çok ekranlı kurulumda "hangi ekrana" menüsü. */
+.wp-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
   height: auto;
   padding: 0;
   border: none;
-  background: none;
-  color: var(--text);
-  font-size: var(--font-md);
-  font-weight: 600;
+  border-radius: 0;
+  background: rgb(0 0 0 / 40%);
+}
+
+.wp-menu {
+  position: absolute;
+  z-index: 4;
+  inset: auto var(--space-3) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  max-height: 82%;
+  overflow-y: auto;
+}
+
+.wp-menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border-color: transparent;
+  background: transparent;
+  font-size: var(--font-sm);
   text-align: left;
-  width: 100%;
+}
+
+.wp-menu button:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.wp-menu-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wp-meta {
+  padding: var(--space-3);
+  min-width: 0;
+}
+
+.wp-name {
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tile-title:hover {
-  color: var(--accent);
-}
-
-.tile-path {
+.wp-path {
   font-size: var(--font-xs);
   color: var(--text-muted);
   /* Uzun yollar sarmasın, baştan kırpılsın — dosya adı sonda kalsın. */
@@ -648,19 +862,93 @@ input[type='range'] {
   text-align: left;
 }
 
-.tile-actions {
+/* Karonun altındaki küçük gerçekler: süre, boyut, biçim. */
+.wp-facts {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3) var(--space-3);
-  margin-top: auto;
+  margin-top: 2px;
+  font-size: var(--font-xs);
+  color: var(--text-muted);
 }
 
-.tile-actions select,
-.tile-actions button {
-  flex: 1;
-  min-width: 0;
+.wp-facts span + span::before {
+  content: '·';
+  margin-right: var(--space-2);
+}
+
+/* Kaplamanın altındaki tek satırlık açıklama. */
+.wp-hint {
+  max-width: 100%;
+  font-size: var(--font-xs);
+  color: rgb(255 255 255 / 72%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Toplu seçim kutusu — seçili olan her zaman görünür. */
+.wp-check {
+  position: absolute;
+  z-index: 2;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgb(255 255 255 / 30%);
+  background: rgb(0 0 0 / 45%);
+  color: #fff;
   font-size: var(--font-sm);
-  padding: 0 var(--space-2);
+  font-weight: 700;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease);
+}
+
+.wp:hover .wp-check,
+.wp-check[data-on='true'] {
+  opacity: 1;
+}
+
+.wp-check[data-on='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.wp[data-selected='true'] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* Dosyası kaybolmuş kayıt — duruyor ama oynatılamıyor. */
+.wp[data-missing='true'] .wp-media {
+  filter: grayscale(1);
+  opacity: 0.65;
+}
+
+.wp-flag[data-tone='error'] {
+  background: var(--error-soft);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+/* Sayfa gelirken ızgaranın şekli belli olsun diye boş kartlar. */
+.wp-skeleton {
+  pointer-events: none;
+}
+
+.wp-skeleton:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--border);
+}
+
+.wp-skeleton .thumb {
+  border-radius: 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -777,12 +1065,21 @@ input[type='range'] {
   height: 28px;
   padding: 0 var(--space-3);
   border-radius: var(--radius-pill);
+  border-color: var(--border);
+  background: var(--bg-panel);
   font-size: var(--font-sm);
   color: var(--text-muted);
 }
 
 .chip:hover {
   color: var(--accent);
+}
+
+.chip[data-active='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* ---------------------------------------------------------------------------
@@ -888,4 +1185,463 @@ input[type='range'] {
 .option[data-active='true'] .option-help {
   color: var(--accent);
   opacity: 0.8;
+}
+
+/* ---------------------------------------------------------------------------
+ * İlk çalıştırma turu — pencerenin tamamını kaplar (views/Onboarding.tsx)
+ * ------------------------------------------------------------------------- */
+
+.onboarding {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+}
+
+.onboard-panel {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  width: min(860px, 100%);
+  max-height: 100%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+
+.onboard-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-4);
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border);
+}
+
+.onboard-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.onboard-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 34px;
+  padding: 0 var(--space-2);
+  color: var(--text-muted);
+}
+
+.onboard-step[data-state='done'] {
+  color: var(--text);
+}
+
+.onboard-step[data-state='now'] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.onboard-bullet {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  font-size: var(--font-xs);
+  font-weight: 600;
+}
+
+.onboard-step[data-state='now'] .onboard-bullet {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.onboard-step[data-state='done'] .onboard-bullet {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.onboard-skip {
+  margin-top: auto;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+.onboard-skip:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.onboard-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  min-height: 452px;
+  overflow-y: auto;
+}
+
+.onboard-title {
+  font-size: var(--font-2xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.onboard-lead {
+  color: var(--text-muted);
+  max-width: 54ch;
+  margin: 0;
+}
+
+.onboard-facts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 54ch;
+}
+
+.onboard-facts li {
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--accent-line);
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+.onboard-facts strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Tek satırlık onay: motor ayakta, kitaplık dolu. */
+.onboard-ok {
+  margin: 0;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.onboard-ok::before {
+  content: '\2713';
+  margin-right: var(--space-2);
+}
+
+.onboard-target {
+  margin-top: var(--space-1);
+}
+
+/* Adımlar farklı uzunlukta; düğmeler yine de hep aynı yerde dursun. */
+.onboard-foot {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+/* Turdaki seçim ızgarası — kitaplık karosunun eylemsiz hâli. */
+.pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: var(--space-3);
+  max-height: 244px;
+  overflow-y: auto;
+}
+
+.pick-tile {
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius);
+  text-align: left;
+}
+
+.pick-tile[data-active='true'] {
+  border-color: var(--accent);
+}
+
+.pick-tile .thumb {
+  border-radius: 0;
+}
+
+.pick-name {
+  padding: var(--space-2) var(--space-3);
+  max-width: 100%;
+  font-size: var(--font-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+ * Toplu seçim çubuğu — içeriğin üstünde yüzer, yalnız seçim varken
+ * ------------------------------------------------------------------------- */
+
+.bulk {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-panel);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+}
+
+.bulk-count {
+  font-weight: 600;
+  color: var(--accent);
+  margin-right: var(--space-2);
+}
+
+/* ---------------------------------------------------------------------------
+ * Ayrıntı çekmecesi — tek bir duvar kağıdının bilinen her şeyi
+ * ------------------------------------------------------------------------- */
+
+.drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  height: auto;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: rgb(0 0 0 / 45%);
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  width: min(390px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+  animation: drawer-in var(--t-med) var(--ease);
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+}
+
+.drawer-head .card-title {
+  margin: 0;
+}
+
+.drawer-preview {
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-sunken);
+}
+
+.drawer-preview .thumb {
+  border-radius: var(--radius);
+}
+
+/* Ad-değer çiftleri: solda etiket, sağda değer, aralarında ince çizgi. */
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font-size: var(--font-sm);
+}
+
+.facts dt {
+  color: var(--text-muted);
+}
+
+.facts dd {
+  margin: 0;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drawer-path {
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+  word-break: break-all;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+}
+
+.drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.drawer-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.drawer .section-label {
+  margin: var(--space-2) 0 0;
+}
+
+.drawer-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+/* ---------------------------------------------------------------------------
+ * Keşfet — kartlar `.wall` ile ortak; buraya yalnız sonsuz kaydırma kalıyor
+ * ------------------------------------------------------------------------- */
+
+.section-chips {
+  margin-bottom: var(--space-4);
+}
+
+.search-note {
+  margin: 0 0 var(--space-3);
+}
+
+/* Cümlenin içine giren düğme — metin gibi görünüyor, düğme gibi çalışıyor. */
+.link {
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: inherit;
+  text-decoration: underline;
+}
+
+/* Görünür olunca bir sonraki sayfa isteniyor (views/Browse.tsx). */
+.scroll-sentinel {
+  height: 1px;
+}
+
+.center {
+  text-align: center;
+  margin: var(--space-5) 0;
+}
+
+.center-row {
+  justify-content: center;
+}
+
+/* ---------------------------------------------------------------------------
+ * Ayarlar: kaydırıcılar ve ölçümler
+ * ------------------------------------------------------------------------- */
+
+.slider-label {
+  min-width: 84px;
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-3);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3);
+  background: var(--bg-sunken);
+  border-radius: var(--radius);
+}
+
+.stat-value {
+  font-size: var(--font-lg);
+  /* Tabular figures so a number ticking once a second does not shuffle the
+     ones next to it sideways. */
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+ * Ekrana özel ayarlar
+ *
+ * Katlanır, çünkü tek ekranlı bir makinede bunların hiçbiri gerekmiyor ve
+ * açık dururlarsa ekran kartını asıl işten — hangi duvar kağıdı nerede —
+ * uzaklaştırıyorlar. Bir ekranın kendi ayarı varsa kendiliğinden açılır.
+ * ------------------------------------------------------------------------- */
+
+.own {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.own > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+/* Varsayılan üçgen yerine kendi göstergemiz: yön değiştirmesi, açık mı kapalı
+   mı olduğunu tek bakışta söylüyor. */
+.own > summary::before {
+  content: '▸';
+  transition: transform var(--t-fast) var(--ease);
+}
+
+.own[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.own > summary::-webkit-details-marker {
+  display: none;
+}
+
+.own > summary:hover {
+  color: var(--text);
+}
+
+.own[open] > summary {
+  margin-bottom: var(--space-3);
 }

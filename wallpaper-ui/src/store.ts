@@ -34,6 +34,29 @@ export type Settings = {
   fit: Fit
   /** 0 means "advance when the clip ends" rather than on a clock. */
   intervalSecs: number
+  /** 1 leaves the picture alone; below dims, above brightens. */
+  brightness: number
+  /** 1 leaves the picture alone; 0 is greyscale. */
+  saturation: number
+  /** 0 is sharp, 1 is the widest blur on offer. */
+  blur: number
+  /** Off until asked for. A desktop that makes noise unprompted is a bug. */
+  sound: boolean
+  volume: number
+  /** Stand down while another application is making sound. */
+  duck: boolean
+  /** Playback rate; 1 is the speed the file was authored at. */
+  speed: number
+  /** How long one wallpaper takes to replace another, in milliseconds. */
+  fadeMs: number
+  /** One wallpaper stretched across every screen. */
+  span: boolean
+  /** The three desktop-wide shortcuts. */
+  hotkeys: boolean
+  /** Frame rate cap while unplugged; 0 keeps the plugged-in rate. */
+  batteryFps: number
+  /** Freeze the wallpaper entirely while Windows battery saver is on. */
+  pauseOnSaver: boolean
 }
 
 export type Store = {
@@ -43,6 +66,8 @@ export type Store = {
   /** Keyed by monitor device name. */
   assignments: Record<string, Assignment>
   settings: Settings
+  /** Whether the first-run walkthrough has been finished or skipped. */
+  onboarded: boolean
 }
 
 export const emptyStore: Store = {
@@ -50,7 +75,24 @@ export const emptyStore: Store = {
   items: [],
   playlists: [],
   assignments: {},
-  settings: { fps: 30, fit: 'cover', intervalSecs: 0 },
+  settings: {
+    fps: 30,
+    fit: 'cover',
+    intervalSecs: 0,
+    brightness: 1,
+    saturation: 1,
+    blur: 0,
+    sound: false,
+    volume: 0.5,
+    duck: true,
+    speed: 1,
+    fadeMs: 400,
+    span: false,
+    hotkeys: true,
+    batteryFps: 24,
+    pauseOnSaver: true,
+  },
+  onboarded: false,
 }
 
 export function newId(): string {
@@ -73,6 +115,9 @@ export async function loadStore(): Promise<Store> {
       items: parsed.items ?? [],
       playlists: parsed.playlists ?? [],
       assignments: parsed.assignments ?? {},
+      // A state file written before onboarding existed belongs to someone who
+      // already found their way around; a library is proof enough of that.
+      onboarded: parsed.onboarded ?? (parsed.items?.length ?? 0) > 0,
     }
   } catch {
     return emptyStore
@@ -86,6 +131,21 @@ export async function saveStore(store: Store): Promise<void> {
 /** Turn a file path into a library entry, titled from its file name. */
 export function itemFromPath(path: string): Item {
   return { id: newId(), path, title: fileTitle(path), added: Date.now() }
+}
+
+/**
+ * Add files to the library, ignoring any already there.
+ *
+ * Adding the same file twice would give two entries that behave identically
+ * and cannot be told apart in a playlist. Returns the store unchanged when
+ * every path was a duplicate, so the caller can skip a needless write.
+ */
+export function withPaths(store: Store, paths: string[]): Store {
+  const fresh = paths
+    .filter((path) => !store.items.some((item) => item.path === path))
+    .map(itemFromPath)
+
+  return fresh.length > 0 ? { ...store, items: [...store.items, ...fresh] } : store
 }
 
 /**

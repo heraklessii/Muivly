@@ -15,7 +15,7 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Where to look for the engine, in order.
-fn engine_path() -> Option<PathBuf> {
+pub fn engine_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
 
@@ -36,8 +36,17 @@ pub fn engine_installed() -> bool {
     engine_path().is_some()
 }
 
-#[tauri::command]
+/// Start the engine, unless it is already up.
+///
+/// The engine refuses to run twice itself, but asking first keeps a process
+/// from being spawned only to exit — which on a slow machine is a visible
+/// flicker of the console window and a second of disk.
+#[tauri::command(async)]
 pub fn start_engine(video: Option<String>) -> Result<(), String> {
+    if crate::pipe::engine_running() {
+        return Ok(());
+    }
+
     let path = engine_path().ok_or("muivly-core.exe not found next to the app")?;
 
     let mut command = Command::new(path);

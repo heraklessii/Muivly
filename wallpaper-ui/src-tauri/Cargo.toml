@@ -17,6 +17,15 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Already in the tree through Tauri; named here so this crate can use it
+# directly. native-tls means schannel, the TLS stack Windows already has,
+# rather than shipping a second one inside the binary.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+
+# Only for the registry: the autostart entry and finding where Steam put the
+# Wallpaper Engine library.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_Security"] }
+
 [profile.release]
 opt-level = "s"
 lto = true
