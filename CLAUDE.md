@@ -47,21 +47,39 @@ wallpaper-ui/     Tauri v2 + React. SADECE ayar paneli. Wallpaper render'ı
   (cross-adapter paylaşım zero-copy'yi bozuyor).
 - **Render, çıkışın sahibi olan adapter'da.** Hibrit laptop'ta dGPU seçilmez —
   pil ve cross-adapter kopya nedeniyle.
-- **Idle/occluded durumda render durur.** Fullscreen uygulama açıkken veya
-  WorkerW görünmüyorken CPU/GPU kullanımı ~0'a yakın olmalı.
+- **Idle/occluded durumda render durur, bir süre sonra bellek de gider.**
+  Fullscreen uygulama açıkken veya WorkerW görünmüyorken CPU/GPU kullanımı
+  ~0'a yakın olmalı. Görünmezlik `hibernate` süresini geçince çözücüler
+  tamamen bırakılıyor (`Renderer::set_idle`) — görünmeyen bir resim için
+  tutulan DPB bu process'teki en pahalı şey. Bu bırakmadan sağ çıkması
+  gereken durum ekleme.
 - **wallpaper-ui'de asla wallpaper render'ı yapma.** WebView sadece UI için.
 - **Görsel/GIF CPU'da çözülür, video asla.** Kural video için: yazılım
   decoder ekranda kaldığı sürece bir çekirdek yakar. PNG'i çözen GPU yok;
-  duran görsel bir kez çözülüp bir daha hiç maliyet çıkarmıyor — bu istisna
-  değil, Muivly'nin en hafif duvar kağıdı.
+  duran görsel bir kez çözülüp bir daha hiç maliyet çıkarmıyor. Shader daha
+  da hafif: decoder yok, DPB yok, MF thread'i yok. İkisi de istisna değil,
+  video kuralının ulaşmaya çalıştığı şekil.
+- **Video yazmak da GPU'da.** `optimize/` (Hafiflet) tek encode noktası:
+  donanım decode → donanım encode, tek D3D11 cihazı. Donanım encoder yoksa
+  iş hata verir, CPU'ya düşmez.
 - **Pilde daha az.** Motor güç kaynağını izliyor; fişten çekilince kare hızı
   düşüyor, Windows pil tasarrufu açıkken çizim tamamen duruyor (son kare
   ekranda kalıyor). Makine tasarruf isterken tam hızda çalışmayı sürdüren bir
   yol ekleme.
-- **Kullanıcının kapatamayacağı hiçbir şey kurulmaz.** Registry'ye yalnız iki
-  yerde yazıyoruz, ikisi de `HKEY_CURRENT_USER` altında ve ikisinin de
-  ayarlarda anahtarı var: başlangıç girdisi ve Explorer sağ tık menüsü.
-  `HKEY_LOCAL_MACHINE` yok, yönetici hakkı yok.
+- **Kullanıcının kapatamayacağı hiçbir şey kurulmaz.** Registry'ye yalnız üç
+  yerde yazıyoruz, üçü de `HKEY_CURRENT_USER` altında ve üçünün de
+  ayarlarda anahtarı var: başlangıç girdisi, Explorer sağ tık menüsü ve
+  vurgu rengi. `HKEY_LOCAL_MACHINE` yok, yönetici hakkı yok. Vurgu rengi
+  kullanıcının zaten sahip olduğu bir değerin üstüne yazan tek yer, o yüzden
+  fazladan yükümlülüğü var: eski değerler ilk yazmadan önce bir dosyaya
+  yedekleniyor ve ayar kapanınca, motor çıkınca ya da motor öldürülmüşse bir
+  sonraki açılışta geri konuyor (`compositor/accent.rs`).
+- **Başında kimse yoksa kimse izlemiyordur.** Örtülme tespiti "görülebilir
+  mi" sorusunu yanıtlıyor; boş sandalyenin önündeki açık masaüstünü hiç
+  yakalamıyor. Motor bu yüzden klavye/fareye son dokunuştan bu yana geçen
+  süreyi de izliyor ve duruyor (`power/idle.rs`). Windows'un kendi sayacı
+  okunuyor — kanca (hook) kurulmuyor, hiçbir tuş görülmüyor. Bunu tuş gören
+  bir şeyle değiştirme.
 - Yeni bağımlılık (crate/npm paketi) eklemeden önce RAM/binary boyutu etkisini
   değerlendir, büyükse sor.
 

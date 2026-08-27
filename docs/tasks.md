@@ -11,6 +11,40 @@ project_overview.md bölümüne referans.
 
 ## Şimdi (aktif faz)
 
+- [ ] **2026-08-27'de yazılan on üç özelliği gerçek makinede ölç.** Hepsi
+      derlendi, `cargo clippy -D warnings` ve 149 test geçiyor, hiçbiri
+      makinede çalıştırılmadı:
+      - [ ] Hafiflet + referans kare: encoder ayarı kabul ediliyor mu
+            (çıktıdaki satır), aynı klip için önce/sonra private bytes
+      - [ ] Boşta durma: 5 dk sonra gerçekten duruyor mu, ilk tuşta geri
+            geliyor mu, gecikme göze batıyor mu
+      - [ ] Makine yükü: derleme sırasında kare hızı düşüyor mu, histerezis
+            gidip gelmeyi engelliyor mu
+      - [ ] Shader parametreleri: `spectrum.hlsl` derleniyor mu (`#define`
+            yaklaşımı), kaydırıcı anında etki ediyor mu
+      - [ ] Shadertoy çevirisi: gerçek bir `.glsl` ile — hangi yapılar
+            kırılıyor, hata mesajı satır numarası doğru mu
+      - [ ] Ses bantları: loopback yakalama açılıyor mu, çıkış cihazı
+            değişince `stale()` yakalıyor mu, CPU'ya etkisi
+      - [ ] Vurgu rengi: renk okunuyor mu, Windows uyguluyor mu, kapatınca
+            eski renkler gerçekten geri geliyor mu (asıl risk burada)
+      - [ ] Sürüklenme: fotoğrafta kare hızında yeniden çizim CPU'ya ne
+            katıyor
+      - [ ] Sahne kaydet/yükle/sil, `--benchmark` çıktısı
+
+- [ ] **Bu oturumda yazılanları gerçek makinede ölç.** Sekiz özellik
+      derlendi ve testleri geçti, hiçbiri makinede çalıştırılmadı:
+      - [ ] Hibernasyon: oyun açıkken Task Manager'da private bytes
+            (beklenti ~700 MB → ~50 MB), uyanma süresi göze batıyor mu
+      - [ ] Hafiflet: gerçek 4K klipte süre, çıktı boyutu, sesin kalması,
+            donanım encoder'ı olmayan makinede hata mesajı
+      - [ ] Shader: `examples/shaders/aurora.hlsl` entegre GPU'da kaç fps,
+            derleme hatasının satır numarası doğru mu
+      - [ ] Sese tepki / paralaks: kapalıyken gerçekten hiç ölçüm yok mu
+      - [ ] Otomasyon: saat kuralı geldiğinde geçiş, tema değişince
+      - [ ] Uygulama kuralı: adı yazılan uygulama öne gelince donma
+      - [ ] Bellek bütçesi: kademeler arası geçişte yeniden açılma
+
 - [ ] **RAM: kolay kazançlar bitti, kalan mimari.** Ölçüldü (tablo
       decisions.md 2026-08-27'de): en kötü hâlde (4K, iki adapter) 790 →
       706 MB private, `MF_LOW_LATENCY` sayesinde. Havuz öznitelikleri
@@ -45,7 +79,6 @@ project_overview.md bölümüne referans.
 
 - [ ] Klip başı/sonu kırpma noktaları (playlist yolunda `path#start-end`
       gibi bir şey gerekiyor; protokol değişikliği)
-- [ ] Shader/prosedürel içerik desteği (v2 kapsamı olabilir)
 - [ ] Linux/Mac desteği araştırması
 
 ## Bloklanmış / Karar Bekliyor
@@ -53,6 +86,25 @@ project_overview.md bölümüne referans.
 (şu an yok)
 
 ## Biten
+
+- [x] Hafiflet'te referans kare sayısı ve GOP (`ICodecAPI`)
+- [x] Kitaplıkta "ekranından büyük" uyarısı ve Hafiflet önerisi
+- [x] Boşta durma (`GetLastInputInfo`) ve Windows hareket azaltma ayarı
+- [x] Makine meşgulken düşük kare hızı (`GetSystemTimes`, histerezisli)
+- [x] Shader parametreleri (`// param`) ve UI kaydırıcıları
+- [x] Shadertoy `.glsl`/`.frag` içe aktarma (satır satır çeviri)
+- [x] Ses bantları + `examples/shaders/spectrum.hlsl`
+- [x] Sahneler (kaydet / geri çağır / sil)
+- [x] Fotoğrafta yavaş sürüklenme (Ken Burns)
+- [x] Vurgu rengi duvar kağıdından (yedekli, geri alınabilir)
+- [x] `muivly-core --benchmark`
+- [x] "Ne kadar süre hiç çizilmedi" özeti
+- [x] Görünmezken çözücüyü tamamen bırakma (hibernasyon)
+- [x] "Hafiflet" — klibi bir kez ekran boyutunda yeniden yazma
+- [x] Shader/prosedürel içerik (`.hlsl`), örnek dosyayla
+- [x] Sese tepki ve imleç paralaksı
+- [x] Saat/tema otomasyonu ve uygulama kuralları
+- [x] Bellek bütçesi ayarı
 
 - [x] Pil politikası: pilde ayrı fps, pil tasarrufunda dondurma
 - [x] Ses ducking — başka uygulama ses çalarken geri çekilme

@@ -1,0 +1,48 @@
+name: Pages
+
+# The project page at heraklessii.github.io/Muivly. It is static HTML in
+# `site/` with no build step: there is nothing to compile, and a toolchain
+# for one page would be a toolchain to keep working.
+
+on:
+  push:
+    branches: [main]
+    # Only when the page itself changed. An engine commit does not need to
+    # redeploy a page that did not move.
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and a run in progress is left to finish: it is
+# publishing, not building, and cancelling half way is how a page ends up
+# in neither state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      - name: Upload the page
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

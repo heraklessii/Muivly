@@ -327,3 +327,61 @@ Kod okunarak çıkarılan hatalar; hepsi tek turda. Gerekçeler
   komutları, geçersiz değerlerin reddi, geçersiz kılmanın kurulup
   temizlenmesi, dondurmanın CPU'yu %0'a indirmesi ve çözülüp devam etmesi.
 - Test sayısı 60 → 65.
+
+## 2026-08-27 — Hibernasyon, Hafiflet, shader ve dört küçük özellik
+
+Tek oturumda sekiz iş; gerekçeler decisions.md'nin 2026-08-27 girdilerinde.
+
+- **Görünmezken çözücü bırakma** (`Renderer::set_idle`). `sync_decoders`
+  artık `idle` bayrağına da bakıyor; compositor döngüsü `paused` süresini
+  sayıyor. Tam ekran oyunda RAM'in tamamı geri veriliyor, ses okuyucusu da
+  bırakılıyor. Ayar: `hibernate <saniye>`, 0 = kapalı.
+- **`optimize/` modülü**: MF source reader → sink writer, donanım decode +
+  donanım encode, tek D3D11 cihazı. Kitaplıkta "Hafiflet" düğmesi, ilerleme
+  status'un `optimize` satırından geliyor, biten dosya kitaplığa ekleniyor.
+- **`decoder/procedural.rs`**: `.hlsl`/`.fx` duvar kağıtları. Örnek:
+  `examples/shaders/aurora.hlsl`. Kitaplıkta kendi filtresi ve kendi karo
+  işareti var (video olarak açılıp "okunamadı" görünüyordu).
+- **Sese tepki + imleç paralaksı** (`audio/meter.rs`, `render::apply_motion`).
+  İkisi de örnekleme penceresini oynatıyor — fazladan geçiş/doku/bellek yok.
+  Ölçer yalnız ayar açıkken açılıyor, donunca kapanıyor.
+- **Otomasyon** (`compositor/rules.rs`): saat ve Windows teması tetikleyicisi.
+  Saat kuralları *başlangıç* saati — iki kural gündüz/gece demek, boşluk
+  bırakılamıyor. Tema kuralı saatten önce geliyor. Registry salt okunur.
+- **Uygulama kuralları** (`power/apps.rs`): adı yazılan uygulama öndeyken
+  donuyor. Ön plan penceresi soruluyor, süreç listesi taranmıyor.
+- **Bellek bütçesi**: `caps::capped`, `Renderer::set_max_scale`.
+- IPC: `hibernate`, `motion`, `memory`, `apps`, `rules`, `optimize`; status'a
+  `hibernate/hibernating/reactive/parallax/memory` alanları ve `apps`,
+  `rules`, `optimize` satırları. Oturum dosyası hepsini saklıyor.
+- Test sayısı 65 → 102 (çekirdek). `cargo fmt`, `clippy -D warnings`, UI
+  `tsc` + `vite build` temiz.
+- **Gerçek donanımda çalıştırılmadı.** Ölçülmesi gerekenler: hibernasyonun
+  RAM kazancı (oyun açıkken Task Manager), Hafiflet'in gerçek bir 4K klipte
+  süresi ve çıktısı, shader'ın entegre GPU'da fps maliyeti.
+
+## 2026-08-27 — Boşta durma, yük, shader ayarları, sahneler, vurgu rengi
+
+Bir oturumda on üç iş; hiçbiri gerçek makinede çalıştırılmadı (bkz.
+`tasks.md`). Gerekçeler: `decisions.md` 2026-08-27 girdileri.
+
+- **RAM'e doğrudan bakan iki iş.** Hafiflet artık encoder'a `ICodecAPI` ile
+  tek referans kare ve bir saniyelik GOP söylüyor — DPB'nin çarpanının
+  ikinci yarısı. Kitaplık, bir klip en büyük ekranın 1.35 katından fazla
+  piksel çözüyorsa rozet ve "kaç katı" satırıyla Hafiflet'i öneriyor.
+- **İki yeni "çizmeye değmez" sinyali.** `power/idle.rs` (klavye/fareye
+  dokunulmayınca dur, varsayılan 5 dk) ve `power/load.rs` (makine meşgulken
+  düşük kare hızı, histerezisli). Windows'un "animasyonları göster" ayarı da
+  okunuyor.
+- **Shader ekosistemi.** Dosya kendi kaydırıcılarını `// param ad min max
+  varsayılan` ile bildiriyor (en çok 8, `#define` ile gerçek isimle
+  kullanılıyor); `.glsl`/`.frag` Shadertoy shader'ları satır satır HLSL'e
+  çevriliyor (`decoder/glsl.rs`); `audio/spectrum.rs` sekiz bant veriyor ve
+  `examples/shaders/spectrum.hlsl` onu çiziyor.
+- **Geri kalanlar.** Sahneler (`compositor/scenes.rs`), fotoğrafta yavaş
+  sürüklenme (`apply_drift`), vurgu rengi (`compositor/accent.rs`, yedekli
+  ve geri alınabilir), `--benchmark` (`bench.rs`) ve durum satırında
+  "ne kadar süre hiç çizilmedi".
+- Protokol büyüdü: `idle`, `busy`, `reducemotion`, `drift`, `accent`,
+  `shader`, `scene`. Oturum dosyasına `idle/busy/reducemotion/drift/accent`,
+  `scene` ve `sparam` satırları eklendi, hepsi round-trip testli.

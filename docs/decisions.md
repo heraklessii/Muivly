@@ -722,3 +722,174 @@ başına gerçek çözünürlüğe indirmek — ama processor bir havuz daha ekl
 ölçülmüştü, net zarar; (b) 80 thread'in kaynağı MF'in paylaşılan iş kuyruğu
 havuzu, ve bunu küçültmek `ReadSample`'dan asenkron bir tasarıma geçmek
 demek. İkisi de ayrı bir iş.
+
+---
+
+## 2026-08-27 — Görünmezken çözücüyü bırakmak (hibernasyon)
+
+**Karar:** Masaüstü belli bir süre (varsayılan 20 sn) hiç görünmediyse motor
+tüm çözücüleri `drop` ediyor. Ekran son karede kalıyor, masaüstü görününce
+çözücüler yeniden açılıyor (klip baştan başlıyor).
+
+**Gerekçe:** "Görünmüyorken CPU ~0" zaten sağlanıyordu ama *bellek* değil.
+Tam ekran oyun açıkken iki 4K decoder'ın DPB'si (≈700 MB private, bkz. bir
+üstteki ölçüm) olduğu gibi duruyordu — yani hafiflik iddiasının en çok
+önemsendiği anda en pahalı olduğumuz an. `sync_decoders` yalnız `enabled` ve
+`video` alanlarına bakıyordu; `occluded`/`frozen` hiç okunmuyordu.
+
+**Neden son kare için kopya tutmuyoruz:** Yüzeyler ayakta kalıyor ve sunum
+yapılmıyor, dolayısıyla ön tampon zaten son kareyi gösteriyor. Ayrı bir
+yakalama dokusu (4K'da 32 MB) tam da geri vermeye çalıştığımız belleği
+tutardı.
+
+**Neden konum geri yüklenmiyor:** Duvar kağıdı döngüde. Geri sarmak
+`SetCurrentPosition` + yeniden çözme demek; kazandırdığı şey "aynı yerden
+devam etti" hissi, maliyeti uyanma anındaki tek pahalı iş.
+
+**Alternatif (elendi):** Süreyi sıfır yapmak, yani alt+tab'da anında
+bırakmak. Oyun–masaüstü arası geçiş yapan biri her seferinde yeniden açılışı
+görür; 20 sn bir alt+tab'ın ötesinde, bir yükleme ekranının içinde.
+
+---
+
+## 2026-08-27 — "Hafiflet": tek seferlik yeniden yazma (`optimize/`)
+
+**Karar:** Kitaplıktaki bir klibi, en büyük ekranın çözünürlüğünde ve tier
+kare hızında bir kez H.264'e yeniden yazan bir iş eklendi. Çıktı
+`%APPDATA%\Muivly\light\` altına gidiyor ve bitince kitaplığa ekleniyor.
+Donanım decode → donanım encode, tek D3D11 cihazı paylaşılıyor.
+
+**Gerekçe:** Ölçümün bıraktığı yerden devam: kalan ~700 MB'ın tamamı kare
+boyutu × referans kare sayısı. Kare sayısını codec belirliyor, boyutu ise
+dosya. Oynatma sırasında ölçeklemek net zarar (processor bir havuz daha
+ekliyor — 2026-08-27 ölçümü). Dosyayı bir kez küçük yazmak aynı kazancı
+kalıcı ve bedava veriyor: boru hattında processor yok, ikinci havuz yok.
+
+**CPU decode kuralıyla ilişkisi:** İhlal değil. Okuyucu ve yazıcı MF DXGI
+device manager ile bizim cihazımıza bağlı; donanım encoder yoksa iş
+"bu dosya için donanım encoder yok" diye başarısız oluyor, CPU'ya düşmüyor.
+
+**Ses:** Düşürülmüyor, AAC 96 kbit/s olarak yeniden yazılıyor. Sesli bir
+duvar kağıdının "optimize" edildikten sonra sessizleşmesi kullanıcının geri
+alamayacağı bir hata olurdu.
+
+**Alternatif (elendi):** Kaynak dosyanın yanına yazmak. Kitaplıklar salt
+okunur paylaşımlarda ve kullanıcının topladığı klasörlerde duruyor.
+
+---
+
+## 2026-08-27 — Shader duvar kağıtları (`decoder/procedural.rs`)
+
+**Karar:** `.hlsl`/`.fx` dosyaları bir duvar kağıdı türü. Kullanıcı tek bir
+`float4 mainImage(float2 uv)` yazıyor; prelude (cbuffer + vertex shader) ve
+entry point motor tarafından ekleniyor. Shader ekran dışı bir dokuya çiziyor
+ve aşağıya `Frame::Bgra` olarak gidiyor.
+
+**Gerekçe:** Video için bellek tablosu hep kötü kalacak — DPB fizik. Shader'da
+decoder yok, DPB yok, MF thread havuzu yok: bir doku (1080p'de 8 MB) ve bir
+program. "Muivly'nin gösterebileceği en hafif duvar kağıdı" kategorisi.
+
+**Neden ekran dışı dokuya, doğrudan swap chain'e değil:** Bir tam ekran geçiş
+maliyetine karşılık fit, ölçek, parlaklık/doygunluk/bulanıklık, crossfade ve
+span'in tamamı bedava geliyor — aşağıdaki her şey için bu bir fotoğraftan
+ayırt edilemiyor.
+
+**Derleme hataları:** `D3DCompile` prelude'un da içinde olduğu metni
+numaralıyor. Satır numaraları kullanıcının dosyasına geri kaydırılıyor
+(`shift_line_numbers`, testli) — aksi hâlde 12 satırlık dosyada "satır 43"
+hatası veriliyor.
+
+---
+
+## 2026-08-27 — Bellek bütçesi: kullanıcı ayarı olarak kare boyutu tavanı
+
+**Karar:** Ayarlarda MB cinsinden bir bütçe var; `caps::capped` bunu bir kare
+boyutu tavanına çeviriyor (600+ → doğal, 350 → 1440p, 200 → 1080p, altı →
+720p) ve tier'ın kendi tavanıyla **küçük olan** kazanıyor.
+
+**Gerekçe:** Tek gerçek kaldıraç kare boyutu, ve kullanıcıya MB sormak
+"1440p mi 1080p mi" sormaktan daha dürüst — istediği şey sayı, tercihi değil.
+Kaba kademeli, çünkü altındaki tahminin kendisi kaba.
+
+**Maliyeti açıkça söyleniyor:** Değiştirmek çözücüleri yeniden açıyor, yani
+oynayan her klip baştan başlıyor. UI bunu yazıyor ve kalıcı çözüm olarak
+"Hafiflet"i gösteriyor.
+
+---
+
+## 2026-08-27 — Hafiflet artık referans kare sayısını da düşürüyor
+
+**Karar:** `optimize/encode.rs` yazıcının encoder MFT'sini `IMFSinkWriterEx`
+ile alıp `ICodecAPI` üzerinden `AVEncVideoMaxNumRefFrame = 1` ve
+`AVEncMPVGOPSize = fps` ayarlıyor. Encoder söz dinlemezse iş yine bitiyor,
+sadece eski hâliyle.
+
+**Gerekçe:** DPB = referans kare sayısı × kare boyutu. Hafiflet şimdiye kadar
+çarpanın yalnız bir yarısına dokunuyordu. H.264 encoder'ları varsayılan
+olarak dört ya da daha fazla referans tutuyor çünkü ileri geri sarılan
+filmler için tasarlandılar; döngüye giren bir duvar kağıdında ilkinden
+sonraki her referans, duvar kağıdı ekranda olduğu sürece tutulan bir tam kare.
+
+**Neden en iyi ihtimalle bir tahmin:** Hangi transform'un encoder olduğu
+sabit değil (önünde bir dönüştürücü olabilir), o yüzden ilk dört transform
+denenip referans ayarını kabul eden encoder sayılıyor. Gerçek makinede
+ölçülmedi — `tasks.md`'de duruyor.
+
+---
+
+## 2026-08-27 — Ses spektrumu: thread yok, kare başına boşaltma var
+
+**Karar:** `audio/spectrum.rs` WASAPI loopback yakalaması açıyor ama kendi
+thread'i ya da zamanlayıcısı yok: tampon render döngüsünden, motorun zaten
+uyanık olduğu bir geçişte boşaltılıyor. Tampon 200 ms, yani 10 fps çizen bir
+duvar kağıdı bile taşırmıyor. Bantlar sekiz Goertzel filtresiyle çıkarılıyor
+(FFT kütüphanesi yok, bağımlılık yok).
+
+**`meter.rs`'in reddettiği şeyle ilişkisi:** Çelişmiyor. `meter.rs` bir efekt
+için "bir thread ve birkaç milisaniyede bir uyanma"yı reddediyordu; burada
+ikisi de yok. Ayrıca tembel: `iBand` yazmayan bir shader ses yığınına hiç
+dokunmuyor, ekrandan çıkınca yakalama bırakılıyor.
+
+**Neden tek seviye yetmedi:** Spektrum çizen bir duvar kağıdı örneklerin
+kendisini istiyor. Uydurma bantlar üretmek — tek seviyeden sekiz sayı
+türetmek — dürüst olmazdı.
+
+---
+
+## 2026-08-27 — Vurgu rengi: geri alınabilir olduğu için var
+
+**Karar:** İsteğe bağlı bir ayar duvar kağıdının ortalama rengini Windows
+vurgu rengine yazıyor (`compositor/accent.rs`). Renk GPU'dan 16×9 okunuyor
+(`Renderer::dominant_colour`) — projedeki tek geri okuma, ve kare başına
+değil duvar kağıdı değişince.
+
+**Gerekçe ve sınır:** Registry kuralı "kapatılabilir" diyordu; bu, kullanıcının
+zaten sahip olduğu bir değerin üstüne yazan ilk yer. O yüzden eski değerler
+ilk yazmadan önce `accent-backup.txt`'ye alınıyor ve ayar kapanınca, motor
+çıkınca ya da motor öldürülmüşse bir sonraki açılışta geri konuyor.
+
+**Dürüst kalan taraf:** `AccentPalette`'in biçimi belgelenmiş değil. Yazılan
+düzen bu işi yapan her aracın oturduğu düzen; bu, özelliğin varsayılan olarak
+kapalı ve kullanıcının açtığı bir şey olmasının sebebi.
+
+---
+
+## 2026-08-27 — Boşta durma ve makine yükü: iki yeni "çizmeye değmez" sinyali
+
+**Karar:** İki ayar daha aynı soruyu başka yönlerden soruyor. `power/idle.rs`
+`GetLastInputInfo` ile "makinenin başında kimse yok" durumunu yakalıyor
+(varsayılan 5 dk → son kare kalıyor) ve Windows'un "animasyonları göster"
+ayarını okuyor. `power/load.rs` `GetSystemTimes` ile makinenin tamamının
+meşguliyetini saniyede bir ölçüp duvar kağıdını düşük kare hızına indiriyor
+(varsayılan %80'in üstünde iki örnek → 10 fps, %60'ın altında geri).
+
+**Gerekçe:** Örtülme tespiti "görülebilir mi" diye soruyor ve boş sandalyenin
+önündeki açık masaüstünü hiç yakalamıyor — README'nin makinesinde bu bir
+çekirdeğin %13.7'si, kimse için. Yük tarafında ise duvar kağıdı pahalı hâle
+gelmiyor; geri kalan her şey geliyor.
+
+**Histerezis şart:** Aralıksız tek eşik, duvar kağıdının dakikada birkaç kez
+iki kare hızı arasında gidip gelmesi demek — bu tasarruf gibi değil takılma
+gibi görünüyor.
+
+**Tuş kaydı yok:** Windows'un kendi sayacı okunuyor, kanca kurulmuyor.

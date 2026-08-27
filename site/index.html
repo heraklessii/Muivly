@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Muivly — a live wallpaper engine for machines that struggle</title>
+    <meta
+      name="description"
+      content="A native live wallpaper engine for Windows. GPU decode, zero-copy, and zero work when nothing is visible. Built for old laptops with integrated graphics."
+    />
+    <meta name="theme-color" content="#0f1115" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f1115'/%3E%3Cpath d='M7 23V9l9 8 9-8v14' stroke='%232dd4bf' stroke-width='3' fill='none' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E" />
+
+    <!-- Open Graph, so a link posted anywhere reads as something. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Muivly" />
+    <meta
+      property="og:description"
+      content="A live wallpaper engine for Windows that you cannot tell is running."
+    />
+
+    <style>
+      /* ----------------------------------------------------------------
+       * The font is served from this repository rather than from a font
+       * CDN. The app promises it makes no network request the user did not
+       * ask for; a page about that app should not hand a visitor's address
+       * to a third party to render its own headline.
+       * ---------------------------------------------------------------- */
+      @font-face {
+        font-family: 'Outfit';
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: swap;
+        src: url('./fonts/outfit-latin.woff2') format('woff2');
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+          U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+          U+FEFF, U+FFFD;
+      }
+
+      @font-face {
+        font-family: 'Outfit';
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: swap;
+        src: url('./fonts/outfit-latin-ext.woff2') format('woff2');
+        unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+          U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+          U+2113, U+2C60-2C7F, U+A720-A7FF;
+      }
+
+      /* The same tokens the app itself uses — see docs/design_system.md. */
+      :root {
+        --bg: #0f1115;
+        --bg-panel: #181b22;
+        --bg-sunken: #0b0d11;
+        --border: #262b35;
+        --border-strong: #333a47;
+        --text: #e8eaed;
+        --text-muted: #8b93a3;
+        --accent: #2dd4bf;
+        --accent-strong: #5eead4;
+        --accent-soft: rgb(45 212 191 / 12%);
+        --accent-line: rgb(45 212 191 / 34%);
+        --on-accent: #04211d;
+        --warning: #fbbf24;
+
+        --radius: 12px;
+        --radius-lg: 16px;
+        --measure: 62ch;
+        color-scheme: dark;
+      }
+
+      /* A visitor who has told their system they want less motion gets a
+         page that stands still — the same courtesy the engine extends. */
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          animation: none !important;
+          transition: none !important;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: 'Outfit', 'Segoe UI', system-ui, sans-serif;
+        font-size: 17px;
+        line-height: 1.65;
+        letter-spacing: 0.005em;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      main {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 0 24px 96px;
+      }
+
+      a {
+        color: var(--accent);
+        text-underline-offset: 3px;
+      }
+
+      h1,
+      h2,
+      h3 {
+        letter-spacing: -0.02em;
+        line-height: 1.2;
+      }
+
+      p {
+        max-width: var(--measure);
+      }
+
+      code {
+        font-family: ui-monospace, 'Cascadia Mono', 'Consolas', monospace;
+        font-size: 0.88em;
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 1px 5px;
+      }
+
+      pre {
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px 18px;
+        overflow-x: auto;
+      }
+
+      pre code {
+        background: none;
+        border: none;
+        padding: 0;
+      }
+
+      /* -------------------------------------------------------------- Hero */
+
+      .hero {
+        padding: 88px 0 56px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .wordmark {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin: 0 0 28px;
+      }
+
+      .wordmark b {
+        color: var(--accent);
+        font-weight: 600;
+      }
+
+      .hero h1 {
+        font-size: clamp(38px, 7vw, 60px);
+        font-weight: 700;
+        margin: 0 0 20px;
+        max-width: 15ch;
+      }
+
+      .hero .lede {
+        font-size: 20px;
+        color: var(--text-muted);
+        margin: 0 0 32px;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 14px;
+        border: 1px solid var(--warning);
+        border-radius: 999px;
+        background: rgb(251 191 36 / 8%);
+        color: var(--warning);
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .status .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 32px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 44px;
+        padding: 0 20px;
+        border: 1px solid var(--border-strong);
+        border-radius: 10px;
+        background: var(--bg-panel);
+        color: var(--text);
+        font-size: 15px;
+        font-weight: 600;
+        text-decoration: none;
+        transition: border-color 140ms ease, background 140ms ease;
+      }
+
+      .button:hover {
+        border-color: var(--accent-line);
+        background: #1e222b;
+      }
+
+      .button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--on-accent);
+      }
+
+      .button.primary:hover {
+        background: var(--accent-strong);
+        border-color: var(--accent-strong);
+      }
+
+      /* ---------------------------------------------------------- Sections */
+
+      section {
+        padding: 56px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      section:last-of-type {
+        border-bottom: none;
+      }
+
+      section > h2 {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin: 0 0 8px;
+      }
+
+      section > h2 + p.claim {
+        font-size: 26px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        line-height: 1.35;
+        margin: 0 0 24px;
+        max-width: 24ch;
+      }
+
+      /* ------------------------------------------------------------ Tables */
+
+      .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-panel);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-variant-numeric: tabular-nums;
+        font-size: 15px;
+      }
+
+      caption {
+        caption-side: bottom;
+        padding: 12px 18px;
+        color: var(--text-muted);
+        font-size: 14px;
+        text-align: left;
+        border-top: 1px solid var(--border);
+      }
+
+      th,
+      td {
+        padding: 12px 18px;
+        text-align: left;
+      }
+
+      thead th {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-muted);
+        border-bottom: 1px solid var(--border);
+      }
+
+      tbody tr + tr td {
+        border-top: 1px solid var(--border);
+      }
+
+      td.figure {
+        font-weight: 600;
+      }
+
+      td.win {
+        color: var(--accent);
+      }
+
+      /* ------------------------------------------------------------- Cards */
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+        margin-top: 8px;
+      }
+
+      .card {
+        padding: 22px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-panel);
+      }
+
+      .card h3 {
+        font-size: 17px;
+        font-weight: 600;
+        margin: 0 0 8px;
+      }
+
+      .card p {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 15px;
+      }
+
+      .rule {
+        border-left: 2px solid var(--accent-line);
+        background: var(--accent-soft);
+        border-radius: 0 var(--radius) var(--radius) 0;
+        padding: 18px 22px;
+        margin: 28px 0 0;
+      }
+
+      .rule p {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      ul.plain {
+        max-width: var(--measure);
+        padding-left: 20px;
+        color: var(--text-muted);
+      }
+
+      ul.plain li {
+        margin-bottom: 10px;
+      }
+
+      ul.plain strong {
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      /* ------------------------------------------------------------ Footer */
+
+      footer {
+        border-top: 1px solid var(--border);
+        color: var(--text-muted);
+        font-size: 14px;
+      }
+
+      footer .inner {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 40px 24px 64px;
+      }
+
+      footer .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+        margin-bottom: 16px;
+      }
+
+      @media (max-width: 640px) {
+        body {
+          font-size: 16px;
+        }
+
+        .hero {
+          padding: 56px 0 40px;
+        }
+
+        section > h2 + p.claim {
+          font-size: 22px;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <main>
+      <header class="hero">
+        <p class="wordmark">Mui<b>vly</b></p>
+        <h1>A live wallpaper engine you cannot tell is running.</h1>
+        <p class="lede">
+          Native, Windows, open source. Built for the old laptop with integrated graphics and
+          8&nbsp;GB of RAM — the machine the alternatives tax all day, every day.
+        </p>
+
+        <p class="status"><span class="dot"></span> Early development — no release yet</p>
+
+        <div class="actions">
+          <a class="button primary" href="https://github.com/heraklessii/Muivly"
+            >Source on GitHub</a
+          >
+          <a class="button" href="https://github.com/heraklessii/Muivly/releases"
+            >Releases</a
+          >
+        </div>
+      </header>
+
+      <section>
+        <h2>The measurement</h2>
+        <p class="claim">A promise you cannot check is marketing.</p>
+        <p>
+          Measured on a two-monitor hybrid laptop — integrated plus discrete GPU, so two decoders,
+          which is the worst case Muivly has. 1080p video at 30&nbsp;fps.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">While&hellip;</th>
+                <th scope="col">CPU (one core)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>the desktop is visible</td>
+                <td class="figure">13.7%</td>
+              </tr>
+              <tr>
+                <td>every monitor is covered</td>
+                <td class="figure win">0.4%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p style="margin-top: 28px">
+          Memory is the honest weak spot, and it is where most of the work has gone. Worst case
+          again — a 4K clip decoded on both GPUs:
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col"></th>
+                <th scope="col">Working set</th>
+                <th scope="col">Private bytes</th>
+                <th scope="col">Threads</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Before</td>
+                <td class="figure">610 MB</td>
+                <td class="figure">790 MB</td>
+                <td>80&ndash;82</td>
+              </tr>
+              <tr>
+                <td>Now</td>
+                <td class="figure win">540 MB</td>
+                <td class="figure win">706 MB</td>
+                <td>79&ndash;81</td>
+              </tr>
+            </tbody>
+          </table>
+          <caption>
+            What is left is almost entirely the two decoders&rsquo; picture buffers. That is the
+            open problem, and it is written down as one.
+          </caption>
+        </div>
+
+        <div class="rule">
+          <p>
+            None of these numbers are yours. <code>muivly-core --benchmark clip.mp4</code> plays a
+            wallpaper for thirty seconds and prints what it cost on <em>your</em> machine — the
+            real engine on the real desktop, not a separate measuring path.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <h2>How</h2>
+        <p class="claim">Rules, not optimisations.</p>
+        <p>
+          Every one of these is a hard rule in the repository. A change that breaks one is not
+          merged, however well it works.
+        </p>
+
+        <div class="grid">
+          <article class="card">
+            <h3>Video decodes on the GPU. Always.</h3>
+            <p>
+              Media Foundation with D3D11VA, and no CPU fallback — deliberately. A software
+              decoder burns a core for as long as it is on screen, on exactly the machines this is
+              for.
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>Zero-copy</h3>
+            <p>
+              A decoded frame stays on the GPU as a D3D11 texture. It never round-trips through
+              system memory on its way to the screen.
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>One decode, not one per monitor</h3>
+            <p>
+              The same video on three screens is decoded once and the texture shared. Screens on
+              different GPUs get one decode each, because sharing across adapters would break the
+              rule above.
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>Nothing visible, nothing running</h3>
+            <p>
+              Fullscreen game in front? Rendering stops — not slows. After twenty seconds the
+              decoders are handed back too, so the memory goes with the CPU time. The last frame
+              stays on screen.
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>Nobody there is nobody watching</h3>
+            <p>
+              Coverage detection never fires for a visible desktop with an empty chair in front of
+              it. After five minutes untouched the picture stands still. Windows&rsquo; own idle
+              counter — no input hook, no keystroke ever seen.
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>Out of the way when the machine is busy</h3>
+            <p>
+              The wallpaper does not get more expensive when you start a build; everything else
+              does. Above 80% of the machine it drops to 10&nbsp;fps until things quieten down.
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>Unplugged is a different budget</h3>
+            <p>
+              A lower frame rate on battery, and under Windows&rsquo; battery saver it stops
+              moving altogether. Both on by default, because the machines this is for are the ones
+              where it matters.
+            </p>
+          </article>
+
+          <article class="card">
+            <h3>The settings window is a separate process</h3>
+            <p>
+              It uses a WebView, which costs RAM. That is a cost you pay only while the window is
+              open — never while the wallpaper is running.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <h2>Shaders</h2>
+        <p class="claim">The lightest thing that can be on a desktop.</p>
+        <p>
+          Drop in an <code>.hlsl</code> file with one function and it plays like any other
+          wallpaper — with no decoder, no picture buffers and no codec threads behind it. On a
+          1080p desktop the entire wallpaper is one texture and one program.
+        </p>
+
+        <pre><code>// param speed 0.1 3.0 1.0 How fast it moves
+
+float4 mainImage(float2 uv)
+{
+    float pulse = 0.5 + 0.5 * sin(iTime * speed);
+    return float4(uv.x, uv.y, pulse + iBand(0), 1.0);
+}</code></pre>
+
+        <ul class="plain">
+          <li>
+            <strong>Its own sliders.</strong> A <code>// param</code> line becomes a control in the
+            settings window, named by the file.
+          </li>
+          <li>
+            <strong>Shadertoy works.</strong> Save one as <code>.glsl</code> and it is translated
+            on the way in — line for line, so a compile error still points at the line you wrote.
+          </li>
+          <li>
+            <strong>It can listen.</strong> <code>iBand(0..7)</code> splits what the machine is
+            playing into bands. The capture behind it has no thread of its own and is opened only
+            while a shader that reads it is on screen.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Privacy</h2>
+        <p class="claim">No telemetry. No account. No update pings.</p>
+        <ul class="plain">
+          <li>
+            Muivly goes online in <strong>exactly one place</strong>: the Discover view, which
+            lists free wallpapers from motionbgs.com. Opening it fetches a page; pressing download
+            fetches a file. It will not talk to any other host, and closing the view puts it
+            offline again.
+          </li>
+          <li>
+            It writes to <strong>three places in your own registry</strong>, all optional and all
+            switchable: the start-up entry, the Explorer right-click item, and — only if you turn
+            it on — the accent colour. Nothing outside <code>HKEY_CURRENT_USER</code>, which is
+            why the installer never asks for administrator rights.
+          </li>
+          <li>
+            The accent colour is the only one that overwrites something you already had, so it is
+            the only one with a promise attached: your previous colours are saved before the first
+            write and put back when you switch it off, when the engine quits, or on the next start
+            if the engine was killed before it could.
+          </li>
+          <li>
+            Everything else works with no connection at all. <strong>This page</strong> serves its
+            own font from this repository rather than from a font CDN, for the same reason.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Getting it</h2>
+        <p class="claim">There is nothing to download yet.</p>
+        <p>
+          Muivly plays a video wallpaper on every monitor, stops when nothing is visible, and has
+          a settings window that lives in the system tray. It is not finished: memory is still
+          above where it needs to be, and the first release is not out.
+        </p>
+        <p>
+          Star or watch the repository if you want to know when it is. When there is a release it
+          will be an installer that needs no administrator rights, a portable zip, and:
+        </p>
+        <pre><code>winget install heraklessii.Muivly</code></pre>
+        <p>
+          Windows 10 (1903+) or Windows 11, 64-bit, and a GPU with hardware video decode —
+          essentially anything from 2014 onward, integrated graphics included.
+        </p>
+
+        <div class="actions">
+          <a class="button primary" href="https://github.com/heraklessii/Muivly"
+            >Read the source</a
+          >
+          <a class="button" href="https://github.com/heraklessii/Muivly/blob/main/CONTRIBUTING.md"
+            >Contributing</a
+          >
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="inner">
+        <div class="links">
+          <a href="https://github.com/heraklessii/Muivly">GitHub</a>
+          <a href="https://github.com/heraklessii/Muivly/issues">Issues</a>
+          <a href="https://github.com/heraklessii/Muivly/blob/main/LICENSE">Apache-2.0</a>
+        </div>
+        <p>
+          Muivly is part of the Mui family, alongside Muita and Muitoon. Built by
+          <a href="https://github.com/heraklessii">heraklessii</a>.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

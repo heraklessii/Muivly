@@ -5,6 +5,9 @@ A native live wallpaper engine for Windows, built for machines that struggle wit
 [![CI](https://github.com/heraklessii/Muivly/actions/workflows/ci.yml/badge.svg)](https://github.com/heraklessii/Muivly/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+**[heraklessii.github.io/Muivly](https://heraklessii.github.io/Muivly)** — the
+same case, on one page.
+
 > **Status: early development.** Muivly plays a video wallpaper on every
 > monitor, decoded on the GPU, stops decoding entirely when nothing is
 > visible, and has a settings window — a library, playlists, and a different
@@ -30,7 +33,18 @@ That goal drives every design decision in this repo:
   decoded once and the texture is shared. (Screens on *different* GPUs get one
   decode per GPU — sharing across adapters would break zero-copy.)
 - **Zero work when nothing is visible.** Fullscreen app in front? Desktop
-  hidden? Rendering stops, not "slows down".
+  hidden? Rendering stops, not "slows down" — and after twenty seconds the
+  decoders are handed back too, so the memory goes with the CPU time. The
+  last frame stays on screen; the wallpaper comes back when the desktop does.
+- **Nobody at the machine is nobody watching.** A visible desktop with an
+  empty chair in front of it costs the full frame rate and nothing catches
+  it: nothing is covering anything. So after five minutes without a keypress
+  the picture stands still, and comes back on the first one. Muivly reads
+  Windows' own idle counter — it installs no input hook and never sees a
+  keystroke.
+- **Out of the way when the machine is busy.** The wallpaper does not get
+  more expensive when you start a build; everything else does. Above 80% of
+  the machine it drops to 10 frames a second until things quieten down.
 - **Unplugged is a different budget.** On battery Muivly drops to a lower frame
   rate, and under Windows' battery saver it stops moving altogether — the last
   frame stays on screen. Both are settings; both are on by default, because the
@@ -38,6 +52,29 @@ That goal drives every design decision in this repo:
 - **The settings window is a separate process.** It uses a WebView, which costs
   RAM. Muivly makes that a cost you pay only while the settings window is open,
   never while the wallpaper is running.
+
+- **A shader is a wallpaper.** Drop in a `.hlsl` file with one
+  `mainImage(float2 uv)` function and it plays like anything else — with no
+  decoder, no picture buffers and no codec threads behind it. It is the
+  lightest thing Muivly can put on a desktop, by a wide margin. There are
+  examples in [examples/shaders](examples/shaders).
+
+  A file can declare its own sliders, which appear in the settings window:
+
+  ```hlsl
+  // param speed 0.1 3.0 1.0 How fast it moves
+  ```
+
+  Shadertoy shaders work too. Save one as `.glsl` or `.frag` and Muivly
+  translates it on the way in — line for line, so a compile error still
+  points at the line you wrote. Shaders that sample a texture channel
+  (`iChannel0`) cannot work and say so rather than failing obscurely.
+
+  A shader can also listen: `iLevel` is how loud the machine is and
+  `iBand(0..7)` splits that into bands, which is what
+  [`spectrum.hlsl`](examples/shaders/spectrum.hlsl) draws. The capture that
+  feeds it is opened only while a shader that reads it is on screen, has no
+  thread of its own, and is drained on a frame the engine was drawing anyway.
 
 ## Download
 
@@ -102,6 +139,28 @@ floor that matters is the codec's own reference-frame requirement.
 What is left is almost entirely those two decoders' picture buffers, and the
 threads are Media Foundation's shared work queue. Both need a different shape,
 not a smaller number.
+
+Both of those shapes now exist, and **Lighten** is where they land. The size
+of a picture buffer is the codec's reference-frame count times the size of the
+frame, and neither belongs to the engine at playback time — but both belong to
+whoever writes the file. So Lighten rewrites a clip once, on the GPU, at the
+size the desktop actually is *and* with a single reference frame instead of
+the four or more an encoder picks by default. A 4K loop on a 1080p laptop
+stops decoding four times the pixels that screen can show, permanently, with
+no scaler in the playback path to pay for it. The library flags a clip that is
+bigger than your largest screen rather than waiting for you to suspect it.
+
+There is also a memory budget in the settings for people who would rather set
+a number than convert a file.
+
+None of these numbers are yours. To get yours:
+
+```bash
+muivly-core --benchmark "C:\path\to\wallpaper.mp4"
+```
+
+That plays the wallpaper for thirty seconds and prints what it cost on your
+machine — the real engine, the real desktop, no separate measuring path.
 
 ## Check your hardware
 
@@ -205,6 +264,17 @@ Design notes and the reasoning behind each choice live in [`docs/`](docs/) —
 - [x] Survives a monitor being plugged in, a resolution change, sleep, and an
       Explorer restart
 - [x] `.muivly` packages — a wallpaper and its credit in one file
+- [x] Stands still when nobody has touched the machine, and stands down when
+      the machine is busy with something else
+- [x] Lighten also cuts the encoder to one reference frame, which is the other
+      half of what a decoder's memory is made of
+- [x] Shaders with their own sliders, Shadertoy `.glsl` import, and eight
+      bands of the sound for shaders that draw it
+- [x] Scenes — a named arrangement of wallpapers across the screens
+- [x] A slow drift for still photographs, with no decoder behind it
+- [x] Optional: the Windows accent colour follows the wallpaper, and gives
+      your own colours back when you switch it off
+- [x] `--benchmark` — the README's table, measured on your machine
 - [ ] Bring memory down further (a 4K clip on two GPUs is still ~700 MB)
 - [ ] First release
 - [ ] Measured RAM/CPU comparison against the alternatives
@@ -220,11 +290,23 @@ will not be merged no matter how well it works — the rules are the product.
 Muivly does not phone home. No telemetry, no analytics, no update pings you did
 not ask for, no account.
 
-Installing it writes to two places in your own registry, both optional and both
-switchable from the settings window: the start-up entry, and the "Muivly duvar
-kağıdı yap" item in Explorer's right-click menu. Nothing is written outside
-`HKEY_CURRENT_USER` and `%APPDATA%\Muivly`, which is why the installer never
-asks for administrator rights.
+Installing it writes to three places in your own registry, all optional and all
+switchable from the settings window: the start-up entry, the "Muivly duvar
+kağıdı yap" item in Explorer's right-click menu, and — only if you switch it on
+— the accent colour. Nothing is written outside `HKEY_CURRENT_USER` and
+`%APPDATA%\Muivly`, which is why the installer never asks for administrator
+rights.
+
+The accent colour is the only one that overwrites something you already had, so
+it is the only one that comes with a promise: your previous colours are saved
+before the first write and put back when you switch it off, when the engine
+quits, or on the next start if the engine was killed before it could.
+
+The idle detection reads the counter Windows already keeps for the whole
+session. There is no input hook, and no keystroke is ever seen by Muivly. The
+audio bands a shader can read come from a loopback capture of what your own
+machine is playing, opened only while such a shader is on screen and closed
+when it leaves; nothing is recorded and nothing leaves the machine.
 
 It goes online in exactly one place: the **Discover** view, which lists free
 wallpapers from [motionbgs.com](https://motionbgs.com). Opening that view

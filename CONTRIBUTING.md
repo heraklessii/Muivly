@@ -20,9 +20,12 @@ changes.
 3. **One decode per adapter, never one per monitor.** The same video on several
    monitors is decoded once and the texture shared. The only split is across
    physical GPUs, because cross-adapter sharing costs a system-memory copy.
-4. **Nothing visible means nothing running.** Fullscreen app in front, or a
-   hidden desktop, must drop CPU and GPU use to approximately zero. Not
-   "reduced" — stopped.
+4. **Nothing visible means nothing running — including memory.** Fullscreen
+   app in front, or a hidden desktop, must drop CPU and GPU use to
+   approximately zero. Not "reduced" — stopped. And once it has been out of
+   sight for a while the decoders themselves are handed back, because a
+   picture buffer held for a picture nobody can see is the most expensive
+   thing in this process. Do not add state that has to survive that.
 5. **No wallpaper rendering in `wallpaper-ui`.** The WebView is for settings.
    Its memory must never be part of the running wallpaper's cost.
 6. **No telemetry, and no network the user did not ask for.** No analytics, no
@@ -34,17 +37,39 @@ changes.
 7. **Images may decode on the CPU; video may not.** Rule 1 is about video,
    where a software decoder burns a core for as long as it is on screen. No
    GPU decodes a PNG, and a still image decodes once and then costs nothing
-   at all — it is the lightest wallpaper Muivly has, not an exception.
+   at all. A shader is lighter still: no decoder, no picture buffers, no
+   codec threads. Neither is an exception to rule 1 — both are the shape
+   rule 1 is trying to get video closer to.
+
+   Rule 1 covers writing video too. `optimize/` is the only place Muivly
+   encodes, and it is hardware decode into hardware encode on one D3D11
+   device. When a machine has no hardware encoder the job fails and says so;
+   it does not fall back to the CPU.
 8. **On battery, less.** The engine watches the power source and lowers its
    frame rate unplugged; under Windows' battery saver it stops drawing
    altogether. Do not add a code path that keeps working at full rate while
    the machine is asked to conserve — the wallpaper is the first thing that
    should give way, not the last.
 9. **Nothing is installed the user cannot switch off.** Muivly writes to the
-   registry in exactly two places, both under `HKEY_CURRENT_USER` and both
-   with a switch in the settings window: the start-up entry and the Explorer
-   context-menu item. Nothing goes in `HKEY_LOCAL_MACHINE`, nothing needs
-   administrator rights, and nothing is written that the app cannot remove.
+   registry in exactly three places, all under `HKEY_CURRENT_USER` and all
+   with a switch in the settings window: the start-up entry, the Explorer
+   context-menu item, and the accent colour. Nothing goes in
+   `HKEY_LOCAL_MACHINE`, nothing needs administrator rights, and nothing is
+   written that the app cannot remove.
+
+   The accent colour is the one that overwrites something the user already
+   had, so it carries an extra obligation: the previous values are saved to
+   a file before the first write and put back when the setting goes off, when
+   the engine quits, or on the next start if the engine was killed before it
+   could. A feature that changes a user's settings and cannot change them
+   back does not ship.
+10. **Nobody at the machine is nobody watching.** Coverage detection answers
+    whether the wallpaper *can* be seen. It never fires for a visible desktop
+    with an empty chair in front of it, which is a full frame rate spent on
+    no one — so the engine also watches how long it has been since the
+    keyboard or the mouse was touched, and stands still. It reads Windows'
+    own idle counter; it does not install an input hook, and it never sees a
+    keystroke. Do not replace that with anything that does.
 
 ## Adding a dependency
 
