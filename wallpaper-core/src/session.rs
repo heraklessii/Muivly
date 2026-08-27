@@ -26,6 +26,8 @@ pub struct Session {
     pub fps: Option<u32>,
     pub fit: Option<Fit>,
     pub interval_secs: Option<u64>,
+    /// Whether a playlist plays in a drawn order rather than as written.
+    pub shuffle: Option<bool>,
     pub visual: Option<Visual>,
     pub sound: Option<Sound>,
     pub power: Option<PowerPolicy>,
@@ -109,6 +111,7 @@ fn parse(text: &str) -> Session {
             "fps" => session.fps = value.parse().ok(),
             "fit" => session.fit = Fit::parse(value),
             "interval" => session.interval_secs = value.parse().ok(),
+            "shuffle" => session.shuffle = Some(value == "on"),
 
             "visual" => {
                 let numbers: Vec<f32> = value.split(' ').filter_map(|n| n.parse().ok()).collect();
@@ -285,6 +288,9 @@ fn written_form(session: &Session) -> String {
     }
     if let Some(interval) = session.interval_secs {
         out.push_str(&format!("interval {interval}\n"));
+    }
+    if let Some(on) = session.shuffle {
+        out.push_str(&format!("shuffle {}\n", if on { "on" } else { "off" }));
     }
     if let Some(visual) = session.visual {
         out.push_str(&format!(
@@ -520,6 +526,28 @@ mod tests {
         assert_eq!(after.accent, Some(true));
         assert_eq!(after.scenes, before.scenes);
         assert_eq!(after.shader_params, before.shader_params);
+    }
+
+    /// Both spellings, because a boolean written as one word and read back
+    /// as another is exactly how a setting stops being remembered without
+    /// anything failing.
+    #[test]
+    fn shuffle_round_trips_either_way() {
+        for wanted in [true, false] {
+            let before = Session {
+                shuffle: Some(wanted),
+                ..Session::default()
+            };
+            assert_eq!(parse(&written_form(&before)).shuffle, Some(wanted));
+        }
+    }
+
+    /// A session file written before shuffle existed says nothing about it,
+    /// and must leave it unset rather than off — the difference is what lets
+    /// the engine's own default apply.
+    #[test]
+    fn a_file_without_a_shuffle_line_leaves_it_unset() {
+        assert_eq!(parse("fps 30\nfit cover\n").shuffle, None);
     }
 
     /// A session file from before any of this existed has none of those

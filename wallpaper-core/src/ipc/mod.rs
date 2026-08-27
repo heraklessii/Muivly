@@ -21,6 +21,7 @@
 //!   fps <n>                   -> `ok`
 //!   fit <cover|contain|stretch> -> `ok`
 //!   interval <seconds>        -> `ok`   (0 = advance when the clip ends)
+//!   shuffle <on|off>          -> `ok`   (play a list in a drawn order)
 //!   visual <bright> <sat> <blur> -> `ok`
 //!   sound <on|off> <volume> <duck> -> `ok`
 //!   power <battery_fps> <freeze_on_saver> -> `ok`  (fps 0 = no separate rate)
@@ -106,6 +107,8 @@ pub enum Command {
     Fps(u32),
     SetFit(Fit),
     Interval(u64),
+    /// Whether a playlist plays in a drawn order rather than as written.
+    SetShuffle(bool),
     SetVisual(Visual),
     SetSound(Sound),
     /// What to do about running on a battery.
@@ -179,6 +182,8 @@ pub struct Status {
     pub frozen: bool,
     pub fit: String,
     pub interval_secs: u64,
+    /// Whether a playlist plays in a drawn order rather than as written.
+    pub shuffle: bool,
     pub brightness: f32,
     pub saturation: f32,
     pub blur: f32,
@@ -259,6 +264,7 @@ impl Default for Status {
             frozen: false,
             fit: Fit::default().name().to_string(),
             interval_secs: 0,
+            shuffle: false,
             brightness: 1.0,
             saturation: 1.0,
             blur: 0.0,
@@ -429,7 +435,7 @@ fn handle(
         "status" => {
             let status = status.lock().expect("status mutex poisoned");
             let mut out = format!(
-                "ok fps={} paused={} frozen={} fit={} interval={} brightness={:.3} \
+                "ok fps={} paused={} frozen={} fit={} interval={} shuffle={} brightness={:.3} \
                  saturation={:.3} blur={:.3} sound={} volume={:.3} duck={} \
                  ducking={} speed={:.2} fade={} span={} hotkeys={} \
                  hibernate={} hibernating={} reactive={:.2} parallax={:.2} \
@@ -443,6 +449,7 @@ fn handle(
                 status.frozen,
                 status.fit,
                 status.interval_secs,
+                status.shuffle,
                 status.brightness,
                 status.saturation,
                 status.blur,
@@ -639,6 +646,11 @@ fn handle(
             Some(fit) => send(commands, Command::SetFit(fit)),
             None => "err fit must be cover, contain or stretch\n".to_string(),
         },
+
+        "shuffle" => send(
+            commands,
+            Command::SetShuffle(rest == "on" || rest == "true"),
+        ),
 
         "interval" => match rest.parse::<u64>() {
             // A minute is the shortest interval that is not just flicker.

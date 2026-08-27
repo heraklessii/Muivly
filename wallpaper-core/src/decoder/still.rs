@@ -335,14 +335,29 @@ impl StillDecoder {
     }
 
     /// Wipe a rectangle back to transparent, which on a wallpaper is black.
+    ///
+    /// The span is cut to what is left of the row, not to what is left of the
+    /// canvas. A frame rectangle that hangs over the right edge — which a
+    /// malformed GIF is free to declare — would otherwise wipe the start of
+    /// the row below it as well, and the wipe would walk further right on
+    /// every row after that.
     fn clear(&mut self, left: u32, top: u32, width: u32, height: u32) {
+        let Some(span) = self.row_span(left, width) else {
+            return;
+        };
         for row in 0..height {
             let Some(start) = self.offset(left, top + row) else {
                 continue;
             };
-            let span = (width as usize * 4).min(self.canvas.len() - start);
             self.canvas[start..start + span].fill(0);
         }
+    }
+
+    /// How many bytes of one row a rectangle starting at `left` may touch,
+    /// or `None` when it starts off the canvas entirely.
+    fn row_span(&self, left: u32, width: u32) -> Option<usize> {
+        let room = self.width.checked_sub(left)?;
+        Some(width.min(room) as usize * 4)
     }
 
     /// Paint a frame onto the canvas, source-over.
@@ -351,13 +366,20 @@ impl StillDecoder {
     /// rather than a lerp. The common case by far is a fully opaque pixel,
     /// which is why that is checked first and copied outright.
     fn blend(&mut self, pixels: &[u8], left: u32, top: u32, width: u32, height: u32) {
+        // Cut to the row, for the same reason `clear` is: a rectangle wider
+        // than the room left of it would otherwise paint onto the row below.
+        let Some(span) = self.row_span(left, width) else {
+            return;
+        };
+        let columns = span / 4;
+
         for row in 0..height {
             let Some(start) = self.offset(left, top + row) else {
                 continue;
             };
             let source = row as usize * width as usize * 4;
 
-            for column in 0..width as usize {
+            for column in 0..columns {
                 let s = source + column * 4;
                 let d = start + column * 4;
                 if s + 4 > pixels.len() || d + 4 > self.canvas.len() {

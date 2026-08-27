@@ -72,11 +72,16 @@ impl AppWatch {
 /// fires is worse than one that occasionally fires wide. The comparison is
 /// case-insensitive and ignores a `.exe` on either side.
 fn same_app(name: &str, process: &str) -> bool {
+    // Folded to lower case *before* the suffix comes off, not after. The
+    // other way round only recognised `.exe` and `.EXE`, so a name typed as
+    // `Photoshop.Exe` kept its suffix, never matched the trimmed process
+    // name, and the rule the user wrote silently never fired.
     let trim = |text: &str| {
-        text.trim()
-            .trim_end_matches(".exe")
-            .trim_end_matches(".EXE")
-            .to_ascii_lowercase()
+        let lowered = text.trim().to_ascii_lowercase();
+        match lowered.strip_suffix(".exe") {
+            Some(stem) => stem.to_string(),
+            None => lowered,
+        }
     };
 
     let name = trim(name);
@@ -138,6 +143,24 @@ mod tests {
         assert!(same_app("photoshop", "Photoshop.exe"));
         assert!(same_app("Photoshop.exe", "photoshop.exe"));
         assert!(same_app("PHOTOSHOP.EXE", "Photoshop.exe"));
+    }
+
+    /// The suffix comes off whatever case it was typed in. This is the case
+    /// that used to fall through: `.Exe` matched neither `.exe` nor `.EXE`,
+    /// so the name kept its suffix and the rule never fired.
+    #[test]
+    fn the_exe_suffix_is_recognised_in_any_case() {
+        assert!(same_app("Photoshop.Exe", "photoshop.exe"));
+        assert!(same_app("photoshop", "Photoshop.ExE"));
+        assert!(same_app("BLENDER.eXe", "blender"));
+    }
+
+    /// Only one suffix comes off. A file genuinely called `game.exe.exe` is
+    /// not the same application as `game.exe`.
+    #[test]
+    fn only_one_suffix_comes_off() {
+        assert!(!same_app("game", "game.exe.exe"));
+        assert!(same_app("game.exe.exe", "game.exe.exe"));
     }
 
     #[test]

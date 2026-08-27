@@ -176,6 +176,17 @@ impl VideoDecoder {
         self.loops
     }
 
+    /// Whether the reader thread has stopped for good.
+    ///
+    /// It only ever stops on an error — the end of the file is a rewind, not
+    /// an exit — so this means the file went away underneath us, or the
+    /// device was lost. Either way no further frame is coming, and a caller
+    /// that keeps this decoder is holding a monitor on one still frame for
+    /// the rest of the session.
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
     /// Play faster or slower than the clip was authored at.
     ///
     /// Nothing is asked of the decoder: it produces the same frames at the

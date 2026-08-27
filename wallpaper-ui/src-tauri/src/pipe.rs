@@ -114,6 +114,8 @@ pub struct Status {
     pub frozen: bool,
     pub fit: String,
     pub interval_secs: u64,
+    /// Whether a playlist plays in a drawn order rather than as written.
+    pub shuffle: bool,
     pub brightness: f32,
     pub saturation: f32,
     pub blur: f32,
@@ -191,6 +193,7 @@ impl Default for Status {
             frozen: false,
             fit: "cover".to_string(),
             interval_secs: 0,
+            shuffle: false,
             brightness: 1.0,
             saturation: 1.0,
             blur: 0.0,
@@ -319,6 +322,7 @@ pub fn status() -> Result<Status, String> {
                     Some(("paused", v)) => status.paused = v == "true",
                     Some(("fit", v)) => status.fit = v.to_string(),
                     Some(("interval", v)) => status.interval_secs = v.parse().unwrap_or(0),
+                    Some(("shuffle", v)) => status.shuffle = v == "true",
                     Some(("brightness", v)) => status.brightness = v.parse().unwrap_or(1.0),
                     Some(("saturation", v)) => status.saturation = v.parse().unwrap_or(1.0),
                     Some(("blur", v)) => status.blur = v.parse().unwrap_or(0.0),
@@ -525,6 +529,11 @@ pub fn set_fit(fit: String) -> Result<(), String> {
 #[tauri::command(async)]
 pub fn set_interval(seconds: u64) -> Result<(), String> {
     request(&format!("interval {seconds}")).map(|_| ())
+}
+
+#[tauri::command(async)]
+pub fn set_shuffle(shuffle: bool) -> Result<(), String> {
+    request(&format!("shuffle {}", if shuffle { "on" } else { "off" })).map(|_| ())
 }
 
 #[tauri::command(async)]

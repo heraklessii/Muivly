@@ -1085,22 +1085,64 @@ impl Renderer {
             return Ok(Pass::default());
         }
 
-        // Only decode what a visible monitor is actually showing.
-        let needed: Vec<PathBuf> = self
-            .targets
-            .iter()
-            .zip(&visible)
-            .filter(|(_, visible)| **visible)
-            .filter_map(|(target, _)| target.video.clone())
-            .collect();
+        // Only decode what a visible monitor is actually showing, and note
+        // which screens that gave a new frame to. A screen whose frame did
+        // not change is still on screen and still correct; presenting it
+        // again would be the same pixels at the cost of a full draw and a
+        // flip.
+        //
+        // A flag per target rather than a list of paths: this runs every
+        // frame for the life of the process, and cloning a `PathBuf` per
+        // monitor per frame is a heap allocation for an answer already
+        // sitting in `targets`.
+        let mut fresh = vec![false; self.targets.len()];
+        // Decoders that will never produce another frame; see below.
+        let mut dead: Vec<PathBuf> = Vec::new();
 
-        // Which files produced a new frame this time round. A file that did
-        // not is still on screen and still correct; presenting it again would
-        // be the same pixels at the cost of a full draw and a flip.
-        let mut advanced: Vec<PathBuf> = Vec::new();
         for (path, decoder) in self.decoders.iter_mut() {
-            if needed.contains(path) && decoder.update(&self.context, elapsed)? {
-                advanced.push(path.clone());
+            let wanted =
+                self.targets.iter().zip(&visible).any(|(target, shown)| {
+                    *shown && target.video.as_deref() == Some(path.as_path())
+                });
+            if !wanted {
+                continue;
+            }
+
+            if decoder.update(&self.context, elapsed)? {
+                for (index, target) in self.targets.iter().enumerate() {
+                    if target.video.as_deref() == Some(path.as_path()) {
+                        fresh[index] = true;
+                    }
+                }
+            }
+
+            if decoder.is_finished() {
+                dead.push(path.clone());
+            }
+        }
+
+        // A decoder whose reader thread has stopped for good. Left in place
+        // it holds its monitor on one still frame for the rest of the
+        // session, keeps counting as live so the loop never rests or
+        // hibernates, and tells the user nothing at all. Treated as the file
+        // failing to open is treated, because that is what it is — the
+        // failure simply arrived later.
+        for path in dead {
+            self.decoders.remove(&path);
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let message = format!("{name} stopped playing: the file or the GPU went away");
+            eprintln!("{message}");
+            self.errors.push(message);
+
+            for (index, target) in self.targets.iter_mut().enumerate() {
+                if target.video.as_deref() == Some(path.as_path()) {
+                    target.video = None;
+                    target.redraw = true;
+                    fresh[index] = false;
+                }
             }
         }
 
@@ -1123,7 +1165,7 @@ impl Renderer {
         let now = Instant::now();
 
         unsafe {
-            for (target, visible) in self.targets.iter_mut().zip(visible) {
+            for (index, (target, visible)) in self.targets.iter_mut().zip(visible).enumerate() {
                 if !visible {
                     continue;
                 }
@@ -1138,6 +1180,15 @@ impl Renderer {
                         .presented_at
                         .is_some_and(|last| now.duration_since(last) < due)
                     {
+                        // The frame this tick brought is not being drawn, and
+                        // by the tick the cap allows it will no longer be
+                        // new. Without this the screen keeps whatever it had
+                        // until the *next* new frame happens to land on an
+                        // allowed tick — which for a clip slower than the cap
+                        // is a monitor stuck on a stale frame.
+                        if fresh[index] {
+                            target.redraw = true;
+                        }
                         live += 1;
                         continue;
                     }
@@ -1177,11 +1228,7 @@ impl Renderer {
 
                 // Nothing new to show and nothing else has changed: the
                 // pixels already on screen are the right ones.
-                let fresh = target
-                    .video
-                    .as_ref()
-                    .is_some_and(|path| advanced.contains(path));
-                if !fresh && !target.redraw && !fading && !drifting {
+                if !fresh[index] && !target.redraw && !fading && !drifting {
                     live += 1;
                     continue;
                 }

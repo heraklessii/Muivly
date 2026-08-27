@@ -36,6 +36,7 @@ fn main() {
             pipe::set_fps,
             pipe::set_fit,
             pipe::set_interval,
+            pipe::set_shuffle,
             pipe::set_visual,
             pipe::set_sound,
             pipe::set_power,

@@ -160,6 +160,13 @@ impl Wallpaper {
         }
     }
 
+    /// Whether this wallpaper has stopped for good and will never produce
+    /// another frame. Only a video can: an image and a shader have nothing
+    /// that could stop. See `VideoDecoder::is_finished`.
+    pub fn is_finished(&self) -> bool {
+        matches!(self, Wallpaper::Video(d) if d.is_finished())
+    }
+
     /// A still photograph: one that has no motion of its own and will show
     /// the same pixels forever. An animated GIF is not one of these, and
     /// neither is a shader.

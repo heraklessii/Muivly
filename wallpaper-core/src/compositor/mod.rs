@@ -4,6 +4,7 @@ mod accent;
 mod clock;
 mod diag;
 mod notify;
+mod order;
 mod render;
 mod rules;
 mod scenes;
@@ -83,6 +84,12 @@ struct Playback {
     /// Empty means this monitor keeps the Windows wallpaper. One entry is a
     /// fixed wallpaper. More than one is a playlist.
     items: Vec<PathBuf>,
+    /// Which item of `items` each step plays. `0..n` while shuffle is off,
+    /// a permutation of it while shuffle is on — see `compositor::order`.
+    /// Kept beside the list rather than applied to it so that turning
+    /// shuffle off puts the playlist back in the order the user wrote.
+    order: Vec<usize>,
+    /// Where in `order` playback has reached, not where in `items`.
     index: usize,
     enabled: bool,
     /// When the current item started, for interval-based advancing.
@@ -94,12 +101,77 @@ struct Playback {
 
 impl Playback {
     fn current(&self) -> Option<&PathBuf> {
-        self.items.get(self.index)
+        self.items.get(*self.order.get(self.index)?)
+    }
+
+    /// Which item of the list is on screen, for the UI and for a shuffle
+    /// that has to know what not to start the next pass with.
+    fn current_index(&self) -> usize {
+        self.order.get(self.index).copied().unwrap_or(0)
+    }
+
+    /// Point this monitor at a new list, from the top.
+    fn play(&mut self, items: Vec<PathBuf>, shuffle: bool) {
+        self.order = if shuffle {
+            order::shuffled(items.len(), None, order::seed())
+        } else {
+            order::straight(items.len())
+        };
+        self.items = items;
+        self.index = 0;
+        self.started = Instant::now();
+        self.loops_at_start = 0;
+    }
+
+    /// Draw the order again, or put it back in the order it was written.
+    /// The item on screen keeps playing; only what comes after it changes.
+    fn reorder(&mut self, shuffle: bool) {
+        let playing = self.current_index();
+        self.order = if shuffle {
+            order::shuffled(self.items.len(), None, order::seed())
+        } else {
+            order::straight(self.items.len())
+        };
+        // Carried over so the wallpaper on screen is not restarted by a
+        // setting that only decides what plays next.
+        self.index = self
+            .order
+            .iter()
+            .position(|item| *item == playing)
+            .unwrap_or(0);
+    }
+
+    /// Move to the next item, drawing a new order at the end of a pass.
+    ///
+    /// Split out from `advance` so it can be tested: everything else that
+    /// function does needs a GPU, and this is the part with the arithmetic
+    /// in it.
+    fn step(&mut self, shuffle: bool) {
+        if self.order.is_empty() {
+            return;
+        }
+
+        let finished = self.current_index();
+        self.index += 1;
+        if self.index >= self.order.len() {
+            // The end of one pass through the list. Shuffled, that is where
+            // the next order is drawn — told which item just played, so the
+            // new pass does not open with the one just seen.
+            self.index = 0;
+            if shuffle {
+                self.order = order::shuffled(self.items.len(), Some(finished), order::seed());
+            }
+        }
+        // The loop count this item is measured against is the caller's to
+        // set: it has the decoders, and the next clip may already be open on
+        // another monitor with a count of its own. See `advance`.
+        self.started = Instant::now();
     }
 
     fn blank() -> Self {
         Self {
             items: Vec::new(),
+            order: Vec::new(),
             index: 0,
             enabled: true,
             started: Instant::now(),
@@ -119,6 +191,9 @@ pub struct Settings {
     pub fit: Fit,
     /// Zero means "advance when the clip ends" rather than on a clock.
     pub interval_secs: u64,
+    /// Whether a playlist plays in a drawn order rather than the one it was
+    /// written in. See `compositor::order`.
+    pub shuffle: bool,
     pub visual: Visual,
     pub sound: Sound,
     pub power: PowerPolicy,
@@ -175,6 +250,10 @@ impl Settings {
             fps: profile.rec.target_fps.max(1),
             fit: Fit::default(),
             interval_secs: 0,
+            // Off: a playlist plays in the order the user put it in until
+            // they say otherwise, and an order nobody asked to be scrambled
+            // reads as a fault rather than as a feature.
+            shuffle: false,
             visual: Visual::default(),
             sound: Sound::default(),
             power: PowerPolicy::default(),
@@ -224,6 +303,9 @@ impl Settings {
         }
         if let Some(interval) = session.interval_secs {
             settings.interval_secs = interval;
+        }
+        if let Some(shuffle) = session.shuffle {
+            settings.shuffle = shuffle;
         }
         if let Some(visual) = session.visual {
             settings.visual = visual;
@@ -401,17 +483,18 @@ pub fn run(
                     .find(|(name, _, _)| *name == monitor.device_name)
             });
 
-            playback.insert(
-                monitor.device_name.clone(),
-                Playback {
-                    items: match saved {
-                        Some((_, _, items)) => items.clone(),
-                        None => initial.iter().cloned().collect(),
-                    },
-                    enabled: saved.map(|(_, enabled, _)| *enabled).unwrap_or(true),
-                    ..Playback::blank()
+            let mut state = Playback {
+                enabled: saved.map(|(_, enabled, _)| *enabled).unwrap_or(true),
+                ..Playback::blank()
+            };
+            state.play(
+                match saved {
+                    Some((_, _, items)) => items.clone(),
+                    None => initial.iter().cloned().collect(),
                 },
+                settings.shuffle,
             );
+            playback.insert(monitor.device_name.clone(), state);
         }
     }
 
@@ -537,10 +620,7 @@ pub fn run(
 
                     for name in screens {
                         let entry = playback.entry(name.clone()).or_insert_with(Playback::blank);
-                        entry.items = items.clone();
-                        entry.index = 0;
-                        entry.started = Instant::now();
-                        entry.loops_at_start = 0;
+                        entry.play(items.clone(), settings.shuffle);
 
                         let current = entry.current().cloned();
                         match &current {
@@ -570,7 +650,12 @@ pub fn run(
 
                 Command::Next { monitor } => {
                     persist = true;
-                    advance(&mut stage.renderers, &mut playback, &monitor)?;
+                    advance(
+                        &mut stage.renderers,
+                        &mut playback,
+                        &monitor,
+                        settings.shuffle,
+                    )?;
                 }
 
                 Command::Fps(n) => {
@@ -590,6 +675,18 @@ pub fn run(
                     persist = true;
                     settings.interval_secs = secs;
                     println!("interval: {secs}s");
+                }
+
+                Command::SetShuffle(on) => {
+                    persist = true;
+                    settings.shuffle = on;
+                    // What is on screen stays there; only what comes after
+                    // it changes. Redrawing the order is not a reason to
+                    // interrupt a wallpaper the user is looking at.
+                    for state in playback.values_mut() {
+                        state.reorder(on);
+                    }
+                    println!("shuffle: {}", if on { "drawn" } else { "as written" });
                 }
 
                 Command::SetVisual(next) => {
@@ -669,8 +766,7 @@ pub fn run(
                         for name in screens {
                             let entry =
                                 playback.entry(name.clone()).or_insert_with(Playback::blank);
-                            entry.items = source.clone();
-                            entry.index = 0;
+                            entry.play(source.clone(), settings.shuffle);
                             let current = entry.current().cloned();
                             apply(&mut stage.renderers, &name, current.as_ref())?;
                         }
@@ -870,10 +966,7 @@ pub fn run(
                                 let entry = playback
                                     .entry(monitor.clone())
                                     .or_insert_with(Playback::blank);
-                                entry.items = items;
-                                entry.index = 0;
-                                entry.started = Instant::now();
-                                entry.loops_at_start = 0;
+                                entry.play(items, settings.shuffle);
                                 let current = entry.current().cloned();
                                 apply(&mut stage.renderers, &monitor, current.as_ref())?;
                             }
@@ -909,7 +1002,12 @@ pub fn run(
         if signals.next {
             let screens: Vec<String> = playback.keys().cloned().collect();
             for monitor in screens {
-                advance(&mut stage.renderers, &mut playback, &monitor)?;
+                advance(
+                    &mut stage.renderers,
+                    &mut playback,
+                    &monitor,
+                    settings.shuffle,
+                )?;
             }
         }
         if signals.pause {
@@ -980,6 +1078,7 @@ pub fn run(
                 fps: Some(settings.fps),
                 fit: Some(settings.fit),
                 interval_secs: Some(settings.interval_secs),
+                shuffle: Some(settings.shuffle),
                 visual: Some(settings.visual),
                 sound: Some(settings.sound),
                 power: Some(settings.power),
@@ -1010,11 +1109,25 @@ pub fn run(
         // Playlists advance either on a clock or when the clip ends. Both are
         // checked here rather than in the renderer, which has no idea what a
         // playlist is.
-        let loops: HashMap<PathBuf, u32> = stage
-            .renderers
-            .iter()
-            .flat_map(|r| r.loop_counts())
-            .collect::<HashMap<_, _>>();
+        let playlists = playback
+            .values()
+            .any(|state| state.enabled && state.items.len() > 1);
+
+        // Asked for only when something could actually advance on it. The
+        // answer is a map and a `PathBuf` clone per open wallpaper, built on
+        // every pass of the loop — thirty times a second while a wallpaper is
+        // playing. For the user with one fixed wallpaper, or a playlist on a
+        // clock, every one of those was a heap allocation for a number
+        // nothing goes on to read.
+        let loops: HashMap<PathBuf, u32> = if playlists && settings.interval_secs == 0 {
+            stage
+                .renderers
+                .iter()
+                .flat_map(|r| r.loop_counts())
+                .collect()
+        } else {
+            HashMap::new()
+        };
 
         let due: Vec<String> = playback
             .iter()
@@ -1033,7 +1146,12 @@ pub fn run(
             .collect();
 
         for monitor in due {
-            advance(&mut stage.renderers, &mut playback, &monitor)?;
+            advance(
+                &mut stage.renderers,
+                &mut playback,
+                &monitor,
+                settings.shuffle,
+            )?;
             changed = true;
         }
 
@@ -1061,10 +1179,7 @@ pub fn run(
                     let screens: Vec<String> = playback.keys().cloned().collect();
                     for name in screens {
                         let entry = playback.entry(name.clone()).or_insert_with(Playback::blank);
-                        entry.items = rule.items.clone();
-                        entry.index = 0;
-                        entry.started = Instant::now();
-                        entry.loops_at_start = 0;
+                        entry.play(rule.items.clone(), settings.shuffle);
                         let current = entry.current().cloned();
                         apply(&mut stage.renderers, &name, current.as_ref())?;
                     }
@@ -1610,16 +1725,15 @@ fn advance(
     renderers: &mut [Renderer],
     playback: &mut HashMap<String, Playback>,
     monitor: &str,
+    shuffle: bool,
 ) -> windows::core::Result<()> {
     let Some(state) = playback.get_mut(monitor) else {
         return Ok(());
     };
-    if state.items.is_empty() {
+    if state.order.is_empty() {
         return Ok(());
     }
-
-    state.index = (state.index + 1) % state.items.len();
-    state.started = Instant::now();
+    state.step(shuffle);
 
     let current = state.current().cloned();
     // The next clip may already be open on another monitor, in which case it
@@ -1683,6 +1797,7 @@ fn publish(status: &Arc<Mutex<Status>>, report: &Report) {
     status.fps = settings.fps;
     status.fit = settings.fit.name().to_string();
     status.interval_secs = settings.interval_secs;
+    status.shuffle = settings.shuffle;
     status.paused = report.paused;
     status.hibernating = report.hibernating;
     status.hibernate_secs = settings.hibernate_secs;
@@ -1749,7 +1864,9 @@ fn publish(status: &Arc<Mutex<Status>>, report: &Report) {
         .map(|(name, state)| MonitorState {
             device_name: name.clone(),
             enabled: state.enabled,
-            index: state.index,
+            // Where in the list, not where in the play order: the UI shows
+            // the list the user wrote and marks what is on screen now.
+            index: state.current_index(),
             items: state.items.clone(),
             overrides: settings.overrides.get(name).copied().unwrap_or_default(),
         })
@@ -1834,6 +1951,93 @@ mod tests {
                 reason: String::new(),
             },
         }
+    }
+
+    fn list(count: usize) -> Vec<PathBuf> {
+        (0..count)
+            .map(|i| PathBuf::from(format!("{i}.mp4")))
+            .collect()
+    }
+
+    /// Everything the list holds, in the order this playback would show it,
+    /// over `steps` advances.
+    fn played(state: &mut Playback, shuffle: bool, steps: usize) -> Vec<PathBuf> {
+        let mut seen = vec![state.current().cloned().unwrap()];
+        for _ in 0..steps {
+            state.step(shuffle);
+            seen.push(state.current().cloned().unwrap());
+        }
+        seen
+    }
+
+    #[test]
+    fn a_list_plays_in_the_order_it_was_written() {
+        let mut state = Playback::blank();
+        state.play(list(3), false);
+        let mut wanted = list(3);
+        wanted.push(PathBuf::from("0.mp4"));
+        assert_eq!(played(&mut state, false, 3), wanted);
+    }
+
+    /// The property shuffle is for: over one pass every wallpaper appears
+    /// exactly once. A shuffle that picked at random each time would fail
+    /// this most of the time, which is the whole reason it is a bag.
+    #[test]
+    fn a_shuffled_pass_shows_every_wallpaper_once() {
+        for _ in 0..40 {
+            let mut state = Playback::blank();
+            state.play(list(5), true);
+
+            let mut seen: Vec<PathBuf> = played(&mut state, true, 4);
+            seen.sort();
+            assert_eq!(seen, list(5));
+        }
+    }
+
+    /// The join between two passes. Without the guard in `order::shuffled`
+    /// this is where the same wallpaper shows up twice in a row.
+    #[test]
+    fn a_wallpaper_never_follows_itself_across_a_pass() {
+        for _ in 0..60 {
+            let mut state = Playback::blank();
+            state.play(list(4), true);
+            let seen = played(&mut state, true, 12);
+            for pair in seen.windows(2) {
+                assert_ne!(pair[0], pair[1], "in {seen:?}");
+            }
+        }
+    }
+
+    /// Turning the setting on or off decides what plays *next*. Restarting
+    /// the wallpaper the user is looking at would make it a visible edit to
+    /// the desktop rather than a preference.
+    #[test]
+    fn changing_the_setting_leaves_the_wallpaper_on_screen_alone() {
+        for shuffle in [true, false] {
+            let mut state = Playback::blank();
+            state.play(list(6), !shuffle);
+            state.step(!shuffle);
+            state.step(!shuffle);
+
+            let showing = state.current().cloned();
+            state.reorder(shuffle);
+            assert_eq!(state.current().cloned(), showing);
+        }
+    }
+
+    /// A single wallpaper is not a playlist, and neither is an empty screen.
+    /// Both used to be arithmetic on a length of one or zero.
+    #[test]
+    fn a_short_list_survives_being_shuffled() {
+        let mut state = Playback::blank();
+        state.play(list(1), true);
+        state.step(true);
+        assert_eq!(state.current(), Some(&PathBuf::from("0.mp4")));
+
+        let mut empty = Playback::blank();
+        empty.play(Vec::new(), true);
+        empty.step(true);
+        assert_eq!(empty.current(), None);
     }
 
     #[test]
