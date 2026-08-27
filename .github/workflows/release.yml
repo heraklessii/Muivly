@@ -46,8 +46,19 @@ jobs:
         working-directory: wallpaper-ui
 
       - name: Build installer
-        run: npx tauri build --config '{\"bundle\":{\"resources\":[\"binaries/muivly-core.exe\"]}}'
+        shell: pwsh
         working-directory: wallpaper-ui
+        # Through a file rather than as an inline argument. The inline form
+        # has to survive YAML, then PowerShell, then the `npx` shim, then
+        # Node's own argv parsing, and it did not: the Tauri CLI was handed
+        # the backslashes literally and refused the config with "key must be
+        # a string at line 1 column 2". A path has nothing to escape.
+        run: |
+          [System.IO.File]::WriteAllText(
+            "$PWD/bundle.json",
+            '{"bundle":{"resources":["binaries/muivly-core.exe"]}}'
+          )
+          npx tauri build --config bundle.json
 
       - name: Package
         shell: pwsh
