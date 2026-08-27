@@ -11,6 +11,16 @@ project_overview.md bölümüne referans.
 
 ## Şimdi (aktif faz)
 
+- [ ] **v0.1.0 taslak release'i gözden geçir ve yayınla.** Tag atıldı,
+      `release.yml` ilk kez çalıştı. Yayınlamadan önce:
+      - [ ] Kurulumu kendi makinende çalıştır — kurulum, ilk açılış, duvar
+            kağıdı ekrana geliyor mu
+      - [ ] Taşınabilir zip'i aç, iki exe de tek başına çalışıyor mu
+      - [ ] Kaldır: registry'de başlangıç girdisi, sağ tık menüsü ve vurgu
+            rengi geride kalmıyor mu
+      - [ ] `.sha256` dosyaları indirilen dosyayla tutuyor mu
+
+
 - [ ] **2026-08-27'de yazılan on üç özelliği gerçek makinede ölç.** Hepsi
       derlendi, `cargo clippy -D warnings` ve 149 test geçiyor, hiçbiri
       makinede çalıştırılmadı:
@@ -88,8 +98,10 @@ project_overview.md bölümüne referans.
 - [ ] Paket formatına önizleme görseli yazma (okuma tarafı hazır, `preview`
       alanı manifest'te duruyor; export şu an yalnız videoyu koyuyor)
 - [ ] WE ile RAM/CPU karşılaştırma benchmark videosu/görseli (pazarlama)
-- [ ] winget'e ilk gönderim (manifestler `packaging/winget/`, release iş
-      akışı dolduruyor — gönderim elle)
+- [ ] winget'e ilk gönderim. Manifestler `packaging/winget/`'te, release iş
+      akışı doldurup artifact olarak yüklüyor; `microsoft/winget-pkgs`'e PR
+      açmak elle yapılan bir iş. README bunun henüz yapılmadığını söylüyor,
+      yapılınca orası da değişmeli.
 
 ## Backlog (öncelik yok, fikir aşaması)
 

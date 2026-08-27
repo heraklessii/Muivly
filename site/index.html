@@ -414,15 +414,13 @@
           8&nbsp;GB of RAM — the machine the alternatives tax all day, every day.
         </p>
 
-        <p class="status"><span class="dot"></span> Early development — no release yet</p>
+        <p class="status"><span class="dot"></span> v0.1.0 — the first release</p>
 
         <div class="actions">
-          <a class="button primary" href="https://github.com/heraklessii/Muivly"
-            >Source on GitHub</a
+          <a class="button primary" href="https://github.com/heraklessii/Muivly/releases/latest"
+            >Download</a
           >
-          <a class="button" href="https://github.com/heraklessii/Muivly/releases"
-            >Releases</a
-          >
+          <a class="button" href="https://github.com/heraklessii/Muivly">Source on GitHub</a>
         </div>
       </header>
 
@@ -699,29 +697,36 @@ float4 mainImage(float2 uv)
 
       <section>
         <h2>Getting it</h2>
-        <p class="claim">There is nothing to download yet.</p>
+        <p class="claim">v0.1.0, and it is a first release.</p>
         <p>
-          Muivly plays a video wallpaper on every monitor, stops when nothing is visible, and has
-          a settings window that lives in the system tray. It is not finished: memory is still
-          above where it needs to be, and the first release is not out.
+          An installer that needs no administrator rights, or a portable zip you unzip and run.
+          Each has a <code>.sha256</code> beside it, so you can check that what you downloaded is
+          what was built.
         </p>
-        <p>
-          Star or watch the repository if you want to know when it is. When there is a release it
-          will be an installer that needs no administrator rights, a portable zip, and:
-        </p>
-        <pre><code>winget install heraklessii.Muivly</code></pre>
         <p>
           Windows 10 (1903+) or Windows 11, 64-bit, and a GPU with hardware video decode —
-          essentially anything from 2014 onward, integrated graphics included.
+          essentially anything from 2014 onward, integrated graphics included. HEVC and AV1 need
+          Microsoft&rsquo;s free codec extensions from the Store; Muivly names the missing one
+          when a file needs it.
+        </p>
+        <p>
+          Windows will warn you that the installer is unsigned. It is unsigned because a
+          code-signing certificate costs a few hundred a year and there is no money behind this
+          project — the alternative to the warning is not a safer download, it is no download.
+          The source is right there if you would rather build it yourself.
+        </p>
+        <p>
+          It is a first release in the honest sense: memory is still above where it needs to be,
+          and it has been run on far fewer machines than Windows has shapes. If something is
+          wrong on yours, an issue with the output of <code>muivly-core --caps</code> in it is
+          the most useful thing you can send.
         </p>
 
         <div class="actions">
-          <a class="button primary" href="https://github.com/heraklessii/Muivly"
-            >Read the source</a
+          <a class="button primary" href="https://github.com/heraklessii/Muivly/releases/latest"
+            >Download v0.1.0</a
           >
-          <a class="button" href="https://github.com/heraklessii/Muivly/blob/main/CONTRIBUTING.md"
-            >Contributing</a
-          >
+          <a class="button" href="https://github.com/heraklessii/Muivly/issues">Report a problem</a>
         </div>
       </section>
     </main>

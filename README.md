@@ -20,11 +20,14 @@ struggle with the alternatives.**
 </div>
 
 > [!NOTE]
-> **Early development — there is nothing to download yet.** Muivly plays a
+> **v0.1.0 is the first release, and it is a first release.** Muivly plays a
 > video wallpaper on every monitor, decoded on the GPU, stops decoding
 > entirely when nothing is visible, and has a settings window that lives in
-> the system tray. Memory is still well above where it needs to be. Star or
-> watch the repo if you want to know when there is a release.
+> the system tray. Memory is still well above where it needs to be, and this
+> has been tested on far fewer machines than Windows has shapes. If something
+> is wrong on yours, [an issue](https://github.com/heraklessii/Muivly/issues)
+> with the output of `muivly-core --caps` in it is the most useful thing you
+> can send.
 
 ## What it costs
 
@@ -101,19 +104,25 @@ reporting that the file would not open.
 
 ## Getting it
 
-Releases will appear on the [Releases page](https://github.com/heraklessii/Muivly/releases)
-once there is something worth downloading. Planned artifacts, per release:
+From the [Releases page](https://github.com/heraklessii/Muivly/releases), in
+two shapes:
 
 | File | What it is |
 |---|---|
 | `Muivly-x.y.z-setup.exe` | Installer. Per user, no administrator prompt. |
 | `Muivly-x.y.z-portable.zip` | Unzip and run. No installer, no registry writes. |
 
-And with winget, once the first release is out:
+Every file has a `.sha256` next to it, so you can check what you downloaded is
+what was built.
 
-```bash
-winget install heraklessii.Muivly
-```
+Windows will warn you about an unsigned installer. It is unsigned because a
+code-signing certificate costs a few hundred a year and this project has no
+money behind it; the alternative to the warning is not a safer download, it is
+no download. Build it yourself if you would rather not take that on trust —
+the instructions are below and there is one dependency.
+
+winget submission is on the list but not done yet; `winget install
+heraklessii.Muivly` will not work until it is.
 
 ## Trying it
 
@@ -304,14 +313,15 @@ when it leaves; nothing is recorded and nothing leaves the machine.
 ## Roadmap
 
 - [ ] Bring memory down further — a 4K clip on two GPUs is still ~700 MB
-- [ ] First release
 - [ ] Measured RAM/CPU comparison against the alternatives
+- [ ] winget submission
 
 <details>
 <summary><b>Done so far</b></summary>
 
 <br>
 
+- [x] First release
 - [x] Hardware capability detection
 - [x] WorkerW injection, one D3D11 device per adapter, per-monitor surfaces
 - [x] Occlusion detection — decoding and rendering stop when nothing is visible
