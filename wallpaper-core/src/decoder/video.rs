@@ -661,7 +661,7 @@ fn create_reader(
 ///
 /// NOSOCKET: this never plays from the network, and asking for the network
 /// stack pulls in work we would only pay for.
-fn start_media_foundation() -> windows::core::Result<()> {
+pub fn start_media_foundation() -> windows::core::Result<()> {
     use std::sync::OnceLock;
     static STARTED: OnceLock<windows::core::HRESULT> = OnceLock::new();
 

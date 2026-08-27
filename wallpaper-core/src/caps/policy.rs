@@ -104,6 +104,44 @@ pub fn decide(adapters: &[AdapterInfo], system: &SystemInfo) -> Recommendation {
     }
 }
 
+/// The largest frame worth decoding inside a memory budget.
+///
+/// The budget the user sets is a number in megabytes, and the only lever
+/// that actually moves it is the frame size: what a decoder holds is its
+/// codec's reference frames at the size of the picture, and everything else
+/// in this process is noise beside that. See docs/decisions.md for the
+/// measurements the steps below come from — a 4K clip on two adapters is
+/// about 700 MB of private bytes, and each halving of the pixel count takes
+/// roughly a quarter of that with it.
+///
+/// Deliberately coarse. There are four frame sizes anybody's decoder is
+/// going to land on, and a continuous function over them would only be
+/// precise about something that is an estimate to begin with.
+pub fn scale_for_budget(budget_mb: u32) -> (u32, u32) {
+    match budget_mb {
+        0 => RES_NATIVE,
+        b if b >= 600 => RES_NATIVE,
+        b if b >= 350 => RES_1440P,
+        b if b >= 200 => RES_1080P,
+        _ => (1280, 720),
+    }
+}
+
+/// The frame size cap once the user's budget is taken into account.
+///
+/// The smaller of the two by pixel count, never the larger: a budget is a
+/// ceiling the user asked for, and a tier that would allow more does not
+/// get to overrule it.
+pub fn capped(tier_scale: (u32, u32), budget_mb: u32) -> (u32, u32) {
+    let budget = scale_for_budget(budget_mb);
+    let pixels = |size: (u32, u32)| size.0 as u64 * size.1 as u64;
+    if pixels(budget) < pixels(tier_scale) {
+        budget
+    } else {
+        tier_scale
+    }
+}
+
 fn unsupported(reason: &str) -> Recommendation {
     Recommendation {
         tier: Tier::Unsupported,
@@ -243,6 +281,31 @@ mod tests {
             vec![monitor(1920, 1080, 60)],
         )];
         assert_eq!(decide(&a, &system(16384, false)).tier, Tier::Unsupported);
+    }
+
+    #[test]
+    fn no_budget_leaves_the_tier_alone() {
+        assert_eq!(capped(RES_1440P, 0), RES_1440P);
+    }
+
+    #[test]
+    fn a_tight_budget_overrules_a_generous_tier() {
+        // A discrete GPU would otherwise decode at the clip's native size,
+        // which on a 4K file is the whole 700 MB the budget was set to
+        // avoid.
+        assert_eq!(capped(RES_NATIVE, 250), RES_1080P);
+    }
+
+    #[test]
+    fn a_generous_budget_does_not_raise_a_low_tier() {
+        // The tier is a judgement about the machine. A user asking for more
+        // memory is not telling us their integrated GPU got faster.
+        assert_eq!(capped(RES_1080P, 4096), RES_1080P);
+    }
+
+    #[test]
+    fn the_smallest_budget_still_leaves_a_watchable_frame() {
+        assert_eq!(scale_for_budget(1), (1280, 720));
     }
 
     #[test]

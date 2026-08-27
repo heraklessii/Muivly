@@ -1,9 +1,12 @@
 //! Puts pixels on the desktop background.
 
+mod accent;
 mod clock;
 mod diag;
 mod notify;
 mod render;
+mod rules;
+mod scenes;
 mod shader;
 mod stats;
 mod window;
@@ -22,16 +25,26 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SPIF_SENDCHANGE, SPI_SETDESKWALLPAPER,
 };
 
-use crate::audio::Audio;
+use crate::audio::{Audio, Meter, Spectrum};
 use crate::caps::GpuProfile;
 use crate::ipc::{Command, MonitorState, Status};
+use crate::power::apps::AppWatch;
 use crate::power::battery::{PowerPolicy, PowerState, PowerWatch};
+use crate::power::idle;
+use crate::power::load::LoadWatch as PowerLoad;
 use crate::session::{self, Session};
 use render::Renderer;
 use window::Surface;
 
 pub use diag::dump as dump_window_tree;
-pub use render::{Fit, Overrides, Rect, Visual};
+pub use render::{Drive, Fit, Motion, Overrides, Rect, Visual};
+// `Trigger` names the field of a `Rule`; nothing outside this module builds
+// one by hand yet, and it is re-exported so that stays possible.
+#[allow(unused_imports)]
+pub use rules::{parse as parse_rules, written_form as write_rules, Rule, Trigger};
+pub use scenes::{
+    parse as parse_scene, valid_name as valid_scene_name, written_form as write_scene, Scene,
+};
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -117,6 +130,37 @@ pub struct Settings {
     pub span: bool,
     /// The three desktop-wide shortcuts.
     pub hotkeys: bool,
+    /// How long the desktop must stay out of sight before the decoders are
+    /// handed back. Zero never hands them back. See `Renderer::set_idle`.
+    pub hibernate_secs: u64,
+    /// How far the wallpaper answers to sound and to the cursor.
+    pub motion: Motion,
+    /// A memory budget in megabytes, which becomes a cap on the frame size
+    /// a decoder is asked for. Zero leaves the tier's own cap in place.
+    pub memory_mb: u32,
+    /// How long the machine may sit untouched before the wallpaper stands
+    /// still. Zero never does. See `power::idle`.
+    pub idle_secs: u64,
+    /// The frame rate to fall to while the machine is busy with something
+    /// else. Zero keeps one rate whatever else is running.
+    pub busy_fps: u32,
+    /// Whether to stop moving when Windows has been told to show fewer
+    /// animations. On by default: somebody who turned that off said so about
+    /// their whole desktop, and this is the largest moving thing on it.
+    pub reduce_motion: bool,
+    /// How far a photograph drifts on its own, 0-1. Zero leaves it still.
+    pub drift: f32,
+    /// Whether the Windows accent colour follows the wallpaper.
+    pub accent: bool,
+    /// Applications that freeze the wallpaper while they are in front.
+    pub apps: Vec<String>,
+    /// Wallpapers that change themselves, by clock or by theme.
+    pub rules: Vec<Rule>,
+    /// Named arrangements of wallpapers across the screens.
+    pub scenes: Vec<Scene>,
+    /// Where each shader file's own settings are set, keyed by path and then
+    /// by the name the file declared.
+    pub shader_params: HashMap<PathBuf, HashMap<String, f32>>,
     /// Frozen by the user: the last frame stays on screen and nothing moves.
     /// Not saved — coming back from a restart already frozen would look
     /// exactly like a broken engine.
@@ -138,6 +182,27 @@ impl Settings {
             fade: Duration::from_millis(400),
             span: false,
             hotkeys: true,
+            // Twenty seconds is past an alt-tab and well inside a loading
+            // screen, so the common case is that a game gets the memory back
+            // and the user never sees the reopen.
+            hibernate_secs: 20,
+            motion: Motion::default(),
+            memory_mb: 0,
+            // Five minutes is past a coffee and well short of a lunch. The
+            // desk being empty is the one case where the wallpaper costs a
+            // full frame rate for nobody, and coverage never catches it.
+            idle_secs: 300,
+            // Ten frames a second while something else needs the machine.
+            // Still moving, at a third of the cost, and the machines this
+            // project is for are the ones where the third matters.
+            busy_fps: 10,
+            reduce_motion: true,
+            drift: 0.0,
+            accent: false,
+            apps: Vec::new(),
+            rules: Vec::new(),
+            scenes: Vec::new(),
+            shader_params: HashMap::new(),
             frozen: false,
             overrides: HashMap::new(),
         }
@@ -184,6 +249,34 @@ impl Settings {
         if let Some(hotkeys) = session.hotkeys {
             settings.hotkeys = hotkeys;
         }
+        if let Some(secs) = session.hibernate_secs {
+            settings.hibernate_secs = secs;
+        }
+        if let Some(motion) = session.motion {
+            settings.motion = motion;
+        }
+        if let Some(mb) = session.memory_mb {
+            settings.memory_mb = mb;
+        }
+        if let Some(secs) = session.idle_secs {
+            settings.idle_secs = secs;
+        }
+        if let Some(fps) = session.busy_fps {
+            settings.busy_fps = fps;
+        }
+        if let Some(on) = session.reduce_motion {
+            settings.reduce_motion = on;
+        }
+        if let Some(drift) = session.drift {
+            settings.drift = drift;
+        }
+        if let Some(accent) = session.accent {
+            settings.accent = accent;
+        }
+        settings.apps = session.apps.clone();
+        settings.rules = session.rules.clone();
+        settings.scenes = session.scenes.clone();
+        settings.shader_params = session.shader_params.clone();
         settings.overrides = session.overrides.clone();
 
         settings
@@ -207,6 +300,9 @@ struct Stage {
     /// What the displays looked like when this was built, so a broadcast
     /// that changed nothing does not cost a rebuild.
     layout: Vec<(String, i32, i32, u32, u32)>,
+    /// The frame size cap this machine's tier chose, before the user's own
+    /// memory budget is applied on top of it.
+    tier_scale: (u32, u32),
 }
 
 impl Stage {
@@ -241,6 +337,7 @@ impl Stage {
             desktop: desktop_bounds(profile),
             primary: primary_monitor(profile),
             layout: layout_of(profile),
+            tier_scale: profile.rec.max_scale,
         })
     }
 
@@ -248,12 +345,19 @@ impl Stage {
     /// any change that all of them share.
     fn apply(&mut self, settings: &Settings) {
         let span = settings.span.then_some(self.desktop);
+        let max_scale = crate::caps::capped(self.tier_scale, settings.memory_mb);
         for renderer in &mut self.renderers {
+            renderer.set_max_scale(max_scale);
+            renderer.set_motion(settings.motion);
             renderer.set_fit(settings.fit);
             renderer.set_visual(settings.visual);
             renderer.set_speed(settings.speed);
             renderer.set_fade(settings.fade);
             renderer.set_span(span);
+            renderer.set_drift(settings.drift);
+            for (path, values) in &settings.shader_params {
+                renderer.set_shader_params(path, values.clone());
+            }
             for (monitor, overrides) in &settings.overrides {
                 renderer.set_overrides(monitor, *overrides);
             }
@@ -327,11 +431,16 @@ pub fn run(
         &Report {
             settings: &settings,
             paused: false,
+            hibernating: false,
             power: power.state(),
             ducking: false,
+            away: false,
+            busy: false,
+            load: 0.0,
             stats: &stats,
             error: None,
             playback: &playback,
+            shaders: Vec::new(),
         },
     );
 
@@ -344,9 +453,52 @@ pub fn run(
     // needs. This is what keeps the UI feeling attached to the engine.
     const MAX_WAIT: Duration = Duration::from_millis(250);
 
+    // How often the automation rules are consulted. See where it is used.
+    const RULES_POLL: Duration = Duration::from_secs(10);
+
+    // How far the wallpaper's average colour has to move before the accent
+    // colour follows it. A video's average wanders by a point or two every
+    // frame, and following that would be a registry write per frame for a
+    // colour nobody could see change.
+    const ACCENT_STEP: u8 = 12;
+
     let start = Instant::now();
     let mut was_paused = false;
     let mut last_error: Option<String> = None;
+    // When the desktop was last seen, and whether the decoders have already
+    // been handed back because it has been out of sight since.
+    let mut hidden_since: Option<Instant> = None;
+    let mut hibernating = false;
+    // The output meter, opened only once something asks for it. A user with
+    // the effect switched off never touches the audio stack at all.
+    let mut meter: Option<Meter> = None;
+    let mut drive = Drive::default();
+    let mut apps = AppWatch::default();
+    // How busy the machine is, and whether the wallpaper is standing down
+    // for it. Sampled once a second; see `power::load`.
+    let mut load = PowerLoad::default();
+    let mut busy = false;
+    // The loopback capture, opened only while something on screen reads the
+    // sound split into bands. Almost always `None`.
+    let mut spectrum: Option<Spectrum> = None;
+    // The colour last put on the desktop's chrome, so the registry is written
+    // when the wallpaper changes rather than on every pass.
+    let mut accented: Option<[u8; 3]> = None;
+    // Whether the wallpaper is standing still because nobody is at the
+    // machine, and whether Windows has asked for less motion.
+    let mut away = false;
+    let mut still_wanted = false;
+
+    // An engine that was killed rather than closed leaves the user's own
+    // accent colours overwritten. Whatever the setting says now, the backup
+    // on disk is somebody's colour scheme waiting to be handed back.
+    if !settings.accent && accent::is_applied() {
+        println!("accent: restoring the colours from a previous run");
+        accent::restore();
+    }
+    // Which rule is on screen, and when the rules were last consulted.
+    let mut ruled: Option<Vec<PathBuf>> = None;
+    let mut rules_checked: Option<Instant> = None;
 
     // Waiting the remainder of a frame with `thread::sleep` is accurate only
     // to the 15.6 ms system timer tick, which at 30 fps means every other
@@ -533,6 +685,74 @@ pub fn run(
                     println!("hotkeys: {}", if on { "on" } else { "off" });
                 }
 
+                Command::SetMotion(next) => {
+                    persist = true;
+                    settings.motion = next;
+                    stage.apply(&settings);
+                    println!(
+                        "motion: reactive {:.2}, parallax {:.2}",
+                        next.reactive, next.parallax
+                    );
+                }
+
+                Command::SetMemory(mb) => {
+                    persist = true;
+                    settings.memory_mb = mb;
+                    // Applied through the stage, which reopens whatever is
+                    // playing at the new size. The restart is visible, and
+                    // it is the honest cost of changing the budget.
+                    stage.apply(&settings);
+                    let scale = crate::caps::capped(stage.tier_scale, mb);
+                    println!(
+                        "memory: {} -> frames capped at {}x{}",
+                        if mb == 0 {
+                            "no budget".to_string()
+                        } else {
+                            format!("{mb} MB")
+                        },
+                        scale.0,
+                        scale.1
+                    );
+                }
+
+                Command::SetApps(names) => {
+                    persist = true;
+                    settings.apps = names;
+                    println!(
+                        "apps: {}",
+                        if settings.apps.is_empty() {
+                            "none".to_string()
+                        } else {
+                            settings.apps.join(", ")
+                        }
+                    );
+                }
+
+                Command::SetRules(next) => {
+                    persist = true;
+                    settings.rules = next;
+                    // Checked on the next pass rather than here: the rule
+                    // that applies right now is the same question the loop
+                    // asks anyway, and asking it twice is two places to get
+                    // it wrong.
+                    ruled = None;
+                    rules_checked = None;
+                    println!("rules: {}", settings.rules.len());
+                }
+
+                Command::SetHibernate(secs) => {
+                    persist = true;
+                    settings.hibernate_secs = secs;
+                    println!(
+                        "hibernate: {}",
+                        if secs == 0 {
+                            "never".to_string()
+                        } else {
+                            format!("after {secs}s out of sight")
+                        }
+                    );
+                }
+
                 Command::SetOverrides {
                     monitor,
                     overrides: next,
@@ -550,6 +770,125 @@ pub fn run(
                         renderer.set_overrides(&monitor, next);
                     }
                     println!("{monitor}: own settings {:?}", next);
+                }
+
+                Command::SetIdle(secs) => {
+                    persist = true;
+                    settings.idle_secs = secs;
+                    println!(
+                        "idle: {}",
+                        if secs == 0 {
+                            "never stands still".to_string()
+                        } else {
+                            format!("still after {secs}s untouched")
+                        }
+                    );
+                }
+
+                Command::SetBusyFps(fps) => {
+                    persist = true;
+                    settings.busy_fps = fps;
+                    println!(
+                        "busy: {}",
+                        if fps == 0 {
+                            "one rate whatever else runs".to_string()
+                        } else {
+                            format!("{fps} fps while the machine is busy")
+                        }
+                    );
+                }
+
+                Command::SetReduceMotion(on) => {
+                    persist = true;
+                    settings.reduce_motion = on;
+                    println!(
+                        "reduce motion: {}",
+                        if on { "respected" } else { "ignored" }
+                    );
+                }
+
+                Command::SetDrift(drift) => {
+                    persist = true;
+                    settings.drift = drift;
+                    stage.apply(&settings);
+                    println!("drift: {:.0}%", drift * 100.0);
+                }
+
+                Command::SetAccent(on) => {
+                    persist = true;
+                    settings.accent = on;
+                    // Switching it off puts the user's own colours back at
+                    // once rather than at the next restart.
+                    if on {
+                        accented = None;
+                    } else {
+                        accent::restore();
+                        accented = None;
+                    }
+                    println!(
+                        "accent: {}",
+                        if on { "follows the wallpaper" } else { "off" }
+                    );
+                }
+
+                Command::SetShaderParams { path, values } => {
+                    persist = true;
+                    settings
+                        .shader_params
+                        .entry(path.clone())
+                        .or_default()
+                        .extend(values.iter().map(|(k, v)| (k.clone(), *v)));
+                    for renderer in &mut stage.renderers {
+                        renderer.set_shader_params(&path, values.clone());
+                    }
+                    println!("shader: {} setting(s) for {}", values.len(), path.display());
+                }
+
+                Command::SaveScene(name) => {
+                    let scene = Scene {
+                        name: name.clone(),
+                        monitors: playback
+                            .iter()
+                            .map(|(monitor, state)| (monitor.clone(), state.items.clone()))
+                            .collect(),
+                    };
+                    if scenes::store(&mut settings.scenes, scene) {
+                        persist = true;
+                        println!("scene: saved {name}");
+                    } else {
+                        last_error = Some(format!("cannot save the scene {name}"));
+                    }
+                }
+
+                Command::LoadScene(name) => {
+                    let wanted =
+                        scenes::find(&settings.scenes, &name).map(|scene| scene.monitors.clone());
+                    match wanted {
+                        Some(monitors) => {
+                            persist = true;
+                            for (monitor, items) in monitors {
+                                let entry = playback
+                                    .entry(monitor.clone())
+                                    .or_insert_with(Playback::blank);
+                                entry.items = items;
+                                entry.index = 0;
+                                entry.started = Instant::now();
+                                entry.loops_at_start = 0;
+                                let current = entry.current().cloned();
+                                apply(&mut stage.renderers, &monitor, current.as_ref())?;
+                            }
+                            last_error = None;
+                            println!("scene: {name}");
+                        }
+                        None => last_error = Some(format!("no scene called {name}")),
+                    }
+                }
+
+                Command::DeleteScene(name) => {
+                    if scenes::remove(&mut settings.scenes, &name) {
+                        persist = true;
+                        println!("scene: removed {name}");
+                    }
                 }
 
                 Command::Freeze(frozen) => {
@@ -648,6 +987,18 @@ pub fn run(
                 fade: Some(settings.fade),
                 span: Some(settings.span),
                 hotkeys: Some(settings.hotkeys),
+                hibernate_secs: Some(settings.hibernate_secs),
+                motion: Some(settings.motion),
+                memory_mb: Some(settings.memory_mb),
+                idle_secs: Some(settings.idle_secs),
+                busy_fps: Some(settings.busy_fps),
+                reduce_motion: Some(settings.reduce_motion),
+                drift: Some(settings.drift),
+                accent: Some(settings.accent),
+                apps: settings.apps.clone(),
+                rules: settings.rules.clone(),
+                scenes: settings.scenes.clone(),
+                shader_params: settings.shader_params.clone(),
                 overrides: settings.overrides.clone(),
                 monitors: playback
                     .iter()
@@ -686,6 +1037,41 @@ pub fn run(
             changed = true;
         }
 
+        // Wallpapers that change themselves. Ten seconds is well inside a
+        // minute, which is the finest a rule can be set to, and it is 600
+        // registry reads an hour rather than 200,000.
+        let rules_due = !settings.rules.is_empty()
+            && rules_checked.is_none_or(|last| last.elapsed() >= RULES_POLL);
+        if rules_due {
+            rules_checked = Some(Instant::now());
+            let now = rules::now_minutes();
+            let dark = rules::dark_theme();
+
+            if let Some(rule) = rules::choose(&settings.rules, now, dark) {
+                if ruled.as_ref() != Some(&rule.items) {
+                    ruled = Some(rule.items.clone());
+                    changed = true;
+                    // Not persisted. What is on screen because of a rule is
+                    // the rule's to decide, and the rules themselves are
+                    // saved — so a restart works this out again within the
+                    // first ten seconds rather than restoring a stale
+                    // answer and then correcting itself.
+                    println!("rule: {} item(s) now showing", rule.items.len());
+
+                    let screens: Vec<String> = playback.keys().cloned().collect();
+                    for name in screens {
+                        let entry = playback.entry(name.clone()).or_insert_with(Playback::blank);
+                        entry.items = rule.items.clone();
+                        entry.index = 0;
+                        entry.started = Instant::now();
+                        entry.loops_at_start = 0;
+                        let current = entry.current().cloned();
+                        apply(&mut stage.renderers, &name, current.as_ref())?;
+                    }
+                }
+            }
+        }
+
         // What the machine is running on, and what that costs the wallpaper.
         let (power_state, power_changed) = power.poll();
         if power_changed {
@@ -704,7 +1090,158 @@ pub fn run(
         // Frozen means the last frame stays where it is: no decode, no draw,
         // no flip. The surfaces stay up, so what the user sees is the
         // wallpaper they chose, standing still.
-        let frozen = settings.frozen || settings.power.should_freeze(power_state);
+        // An application the user named is in front. Treated exactly like a
+        // hand-frozen wallpaper — the last frame stays, nothing is decoded
+        // — because that is what the user asked for when they named it.
+        let app_freeze = apps.matches(&settings.apps);
+
+        // Nobody has touched the machine for long enough that the desktop is
+        // being looked at by no one. Coverage cannot catch this — nothing is
+        // covering anything — and it is the one case where a visible
+        // wallpaper costs a full frame rate for an empty chair.
+        let now_away = idle::away(settings.idle_secs);
+        if now_away != away {
+            away = now_away;
+            changed = true;
+            println!(
+                "{}",
+                if away {
+                    "still: nobody at the machine"
+                } else {
+                    "moving: somebody came back"
+                }
+            );
+        }
+
+        // Windows has been told to show fewer animations. Somebody who chose
+        // that chose it for their whole desktop.
+        let now_still = settings.reduce_motion && !idle::animations_wanted();
+        if now_still != still_wanted {
+            still_wanted = now_still;
+            changed = true;
+            println!(
+                "{}",
+                if still_wanted {
+                    "still: Windows is set to reduce motion"
+                } else {
+                    "moving: Windows allows animation again"
+                }
+            );
+        }
+
+        let frozen = settings.frozen
+            || app_freeze
+            || away
+            || still_wanted
+            || settings.power.should_freeze(power_state);
+
+        // How busy the rest of the machine is. Read even while frozen, so
+        // the wallpaper is already at the right rate when it starts again.
+        let (now_busy, busy_changed) = load.poll();
+        if busy_changed {
+            busy = now_busy;
+            changed = true;
+            println!(
+                "load: {} ({:.0}% of the machine)",
+                if busy {
+                    "standing down"
+                } else {
+                    "back to the usual rate"
+                },
+                load.percent()
+            );
+        }
+
+        // A shader that draws the sound needs the sound itself, not a level.
+        // The capture is opened for as long as one is on screen and given
+        // back the moment it leaves — see `audio::spectrum`.
+        let wants_bands = !frozen && stage.renderers.iter().any(|r| r.wants_bands());
+        if wants_bands {
+            if spectrum.is_none() {
+                match Spectrum::new() {
+                    Ok(opened) => {
+                        println!("spectrum: listening for a shader that draws it");
+                        spectrum = Some(opened)
+                    }
+                    // A wallpaper that cannot hear is one with flat bars, not
+                    // one that stops.
+                    Err(e) => eprintln!("spectrum: {}", e.message()),
+                }
+            }
+            if let Some(capture) = &mut spectrum {
+                drive.bands = capture.read();
+                // The output device changed underneath us: the old endpoint
+                // stays open and silent forever otherwise.
+                if capture.stale() {
+                    spectrum = None;
+                }
+            }
+        } else if spectrum.is_some() {
+            spectrum = None;
+            drive.bands = [0.0; crate::audio::BANDS];
+        }
+
+        // A shader is handed the cursor directly and may use `iMouse`
+        // whether or not the parallax effect is on, so the cursor is read
+        // for one even when nothing else wants it. One call a frame, and
+        // only while a shader is on a screen.
+        let shader_on_screen = !frozen && stage.renderers.iter().any(|r| r.has_shader());
+        if shader_on_screen || wants_bands {
+            if shader_on_screen {
+                drive.cursor = cursor_position(stage.desktop);
+            }
+            // A shader reads the drive directly, so the numbers are pushed
+            // even where the fit-window effects are switched off.
+            for renderer in &mut stage.renderers {
+                renderer.set_drive(drive);
+            }
+        }
+
+        // What the wallpaper is answering to this frame. Measured only when
+        // something asked for it, and not at all while nothing is moving.
+        if settings.motion != Motion::default() && !frozen {
+            if settings.motion.reactive > 0.0 {
+                if meter.is_none() {
+                    match Meter::new() {
+                        Ok(opened) => meter = Some(opened),
+                        // No meter is a wallpaper that does not pulse, not a
+                        // wallpaper that stops.
+                        Err(e) => eprintln!("meter: {}", e.message()),
+                    }
+                }
+                drive.level = meter.as_mut().map(Meter::read).unwrap_or(0.0);
+            } else {
+                drive.level = 0.0;
+            }
+
+            // Left where the block above put it when a shader is on screen:
+            // that one reads the cursor for `iMouse`, which is not the same
+            // question as whether the parallax effect is switched on.
+            drive.cursor = if settings.motion.parallax > 0.0 {
+                cursor_position(stage.desktop)
+            } else if shader_on_screen {
+                drive.cursor
+            } else {
+                (0.0, 0.0)
+            };
+
+            for renderer in &mut stage.renderers {
+                renderer.set_drive(drive);
+            }
+        } else if meter.is_some() {
+            // Switched off, or frozen: give the endpoint back rather than
+            // holding a COM object for an effect nobody is watching. The
+            // bands are left alone — they belong to the capture above, which
+            // is a different reading with a different owner.
+            meter = None;
+            drive.level = 0.0;
+            if !shader_on_screen {
+                drive.cursor = (0.0, 0.0);
+            }
+            for renderer in &mut stage.renderers {
+                renderer.set_drive(drive);
+            }
+        }
 
         let elapsed = start.elapsed();
         let mut live = 0;
@@ -743,7 +1280,89 @@ pub fn run(
             changed = true;
         }
 
+        // Nothing has been visible for long enough that the memory is worth
+        // more to the machine than the decoders are to us. This is the one
+        // saving that shows up in Task Manager while a game is running: the
+        // render loop already costs nothing when covered, but the picture
+        // buffers stay allocated for as long as a decoder is open.
+        if paused {
+            hidden_since.get_or_insert_with(Instant::now);
+        } else {
+            hidden_since = None;
+        }
+
+        let want_idle = settings.hibernate_secs > 0
+            && paused
+            && hidden_since.is_some_and(|since| {
+                since.elapsed() >= Duration::from_secs(settings.hibernate_secs)
+            });
+
+        if want_idle != hibernating {
+            hibernating = want_idle;
+            changed = true;
+            for renderer in &mut stage.renderers {
+                renderer.set_idle(hibernating);
+            }
+
+            if hibernating {
+                println!("hibernating: decoders released");
+            } else {
+                println!("waking: decoders reopened");
+                // Every clip restarts, so the loop counts a playlist was
+                // measuring against are gone with them. Left alone, a
+                // playlist would sit on the same item until the new count
+                // climbed past the old one.
+                for state in playback.values_mut() {
+                    state.loops_at_start = 0;
+                    state.started = Instant::now();
+                }
+            }
+        }
+
+        // The desktop's chrome, taking its colour from the picture behind it.
+        //
+        // Only when the wallpaper on the primary screen changed: this reads
+        // pixels back from the GPU and writes to the registry, and neither
+        // belongs on a per-frame path. `presented` gates it because the
+        // colour is read out of a frame, and there is no frame to read
+        // before the first one has been drawn.
+        if settings.accent && presented > 0 && !hibernating {
+            let showing = stage
+                .primary
+                .as_ref()
+                .and_then(|name| playback.get(name.as_str()))
+                .and_then(|state| state.current().cloned());
+
+            if let (Some(monitor), Some(_)) = (stage.primary.clone(), showing) {
+                let sampled = stage
+                    .renderers
+                    .iter()
+                    .find(|r| r.has_monitor(&monitor))
+                    .and_then(|r| r.dominant_colour(&monitor));
+
+                // A colour close enough to the last one is the same colour:
+                // a video's average wanders by a point or two every frame,
+                // and following that would be a registry write per frame.
+                if let Some(colour) = sampled {
+                    let moved = accented.is_none_or(|last| {
+                        last.iter()
+                            .zip(colour)
+                            .any(|(a, b)| a.abs_diff(b) > ACCENT_STEP)
+                    });
+                    if moved {
+                        accented = Some(colour);
+                        accent::apply(colour);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
         stats.drew(presented);
+        // Resting is not the same as paused: a frozen wallpaper, a covered
+        // one and one waiting for its owner to come back all cost nothing,
+        // and all three are what the user is being told about.
+        stats.rested(frozen || live == 0);
         if stats.sample() {
             changed = true;
         }
@@ -756,12 +1375,15 @@ pub fn run(
             .primary
             .as_ref()
             .filter(|_| settings.sound.enabled)
+            // Hibernating means giving the memory back, and an audio reader
+            // is a decoder like any other. It is muted anyway.
+            .filter(|_| !hibernating)
             .and_then(|name| playback.get(name.as_str()))
             .filter(|state| state.enabled)
             .and_then(|state| state.current())
-            // A photo has no soundtrack, and starting a thread to discover
-            // that is a thread for nothing.
-            .filter(|path| !crate::decoder::is_still(path))
+            // A photo has no soundtrack and neither does a shader, and
+            // starting a thread to discover that is a thread for nothing.
+            .filter(|path| !crate::decoder::is_still(path) && !crate::decoder::is_shader(path))
             .cloned();
 
         if audio.as_ref().map(|a| a.path()) != wanted_track.as_deref() {
@@ -786,11 +1408,20 @@ pub fn run(
                 &Report {
                     settings: &settings,
                     paused,
+                    hibernating,
                     power: power_state,
                     ducking,
+                    away,
+                    busy,
+                    load: load.percent(),
                     stats: &stats,
                     error: last_error.as_deref(),
                     playback: &playback,
+                    shaders: stage
+                        .renderers
+                        .iter()
+                        .flat_map(|renderer| renderer.declared_params())
+                        .collect(),
                 },
             );
         }
@@ -804,6 +1435,9 @@ pub fn run(
         // some frames held for one tick and some for two, which is exactly
         // what a viewer reads as stutter even though no frame was lost.
         let fps = settings.power.effective_fps(settings.fps, power_state);
+        // ...and then whatever the rest of the machine is doing. The lower
+        // of the two wins: unplugged *and* busy is not a reason to speed up.
+        let fps = crate::power::load::effective_fps(fps, settings.busy_fps, busy);
         let frame_time = Duration::from_secs_f64(1.0 / fps as f64);
         let budget = if paused { OCCLUDED_POLL } else { frame_time };
         let now = Instant::now();
@@ -837,6 +1471,13 @@ pub fn run(
         pacer.wait_until(deadline);
     }
 
+    // The user's own accent colours, handed back. Leaving a desktop tinted
+    // by a wallpaper that is no longer running would be Muivly changing
+    // something and not changing it back.
+    if accent::is_applied() {
+        accent::restore();
+    }
+
     // Dropping the renderers destroys the windows. Windows does not repaint
     // the wallpaper underneath on its own, so ask it to.
     drop(stage);
@@ -855,6 +1496,35 @@ fn find_parent() -> windows::core::Result<HWND> {
     })?;
     println!("parent: {}", target.how);
     Ok(target.hwnd)
+}
+
+/// Where the cursor is on the desktop, -1 to 1 on each axis.
+///
+/// Against the whole desktop rather than one monitor, so a wallpaper spanning
+/// two screens leans the same way on both — and so the picture on the left
+/// screen is already at the end of its travel when the cursor is over the
+/// right one, which is what depth looks like.
+fn cursor_position(desktop: Rect) -> (f32, f32) {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    if desktop.width == 0 || desktop.height == 0 {
+        return (0.0, 0.0);
+    }
+
+    let mut point = POINT::default();
+    if unsafe { GetCursorPos(&mut point) }.is_err() {
+        return (0.0, 0.0);
+    }
+
+    let across = |value: i32, origin: i32, size: u32| {
+        ((value - origin) as f32 / size as f32 * 2.0 - 1.0).clamp(-1.0, 1.0)
+    };
+
+    (
+        across(point.x, desktop.x, desktop.width),
+        across(point.y, desktop.y, desktop.height),
+    )
 }
 
 /// The smallest rectangle containing every monitor.
@@ -990,12 +1660,21 @@ fn apply(
 struct Report<'a> {
     settings: &'a Settings,
     paused: bool,
+    /// Whether the decoders have been handed back while nobody is looking.
+    hibernating: bool,
     power: PowerState,
     /// Whether the soundtrack is standing down for another application.
     ducking: bool,
+    /// Whether the wallpaper is standing still because nobody is there.
+    away: bool,
+    /// Whether it is standing down for a busy machine, and how busy.
+    busy: bool,
+    load: f32,
     stats: &'a stats::Stats,
     error: Option<&'a str>,
     playback: &'a HashMap<String, Playback>,
+    /// What every shader on screen declares it wants sliders for.
+    shaders: Vec<(PathBuf, Vec<(crate::decoder::ShaderParam, f32)>)>,
 }
 
 fn publish(status: &Arc<Mutex<Status>>, report: &Report) {
@@ -1005,6 +1684,44 @@ fn publish(status: &Arc<Mutex<Status>>, report: &Report) {
     status.fit = settings.fit.name().to_string();
     status.interval_secs = settings.interval_secs;
     status.paused = report.paused;
+    status.hibernating = report.hibernating;
+    status.hibernate_secs = settings.hibernate_secs;
+    status.reactive = settings.motion.reactive;
+    status.parallax = settings.motion.parallax;
+    status.memory_mb = settings.memory_mb;
+    status.idle_secs = settings.idle_secs;
+    status.away = report.away;
+    status.busy_fps = settings.busy_fps;
+    status.busy = report.busy;
+    status.load = report.load;
+    status.reduce_motion = settings.reduce_motion;
+    status.drift = settings.drift;
+    status.accent = settings.accent;
+    status.uptime_secs = report.stats.uptime.as_secs();
+    status.resting_secs = report.stats.resting.as_secs();
+    status.apps = settings.apps.join("|");
+    status.rules = rules::written_form(&settings.rules);
+    status.scenes = settings
+        .scenes
+        .iter()
+        .map(scenes::written_form)
+        .collect::<Vec<_>>();
+    status.shaders = report
+        .shaders
+        .iter()
+        .map(|(path, params)| {
+            let fields: Vec<String> = params
+                .iter()
+                .map(|(param, value)| {
+                    format!(
+                        "{},{},{},{},{},{}",
+                        param.name, param.min, param.max, param.default, value, param.label
+                    )
+                })
+                .collect();
+            format!("{}|{}", path.display(), fields.join("|"))
+        })
+        .collect();
     status.frozen = settings.frozen;
     status.brightness = settings.visual.brightness;
     status.saturation = settings.visual.saturation;

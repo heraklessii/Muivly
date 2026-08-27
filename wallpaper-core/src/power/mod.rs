@@ -19,7 +19,10 @@
 //! focus would be missed and that monitor would keep rendering into nothing.
 //! So every top-level window is examined.
 
+pub mod apps;
 pub mod battery;
+pub mod idle;
+pub mod load;
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};

@@ -9,6 +9,8 @@
 //!   still image is uploaded once and then costs nothing at all — it is the
 //!   cheapest wallpaper Muivly can show, not an exception to the rule.
 
+mod glsl;
+mod procedural;
 mod still;
 mod video;
 
@@ -19,7 +21,9 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView,
 };
 
+pub use procedural::{is_shader, ShaderParam};
 pub use still::is_still;
+pub use video::start_media_foundation;
 
 /// Why a file would not play, in a sentence a user can act on.
 ///
@@ -30,7 +34,7 @@ pub use still::is_still;
 ///
 /// `caps` is what the GPU said it could decode when the engine started.
 pub fn why_not(path: &Path, caps: crate::caps::DecodeCaps) -> Option<String> {
-    if is_still(path) {
+    if is_still(path) || is_shader(path) {
         return None;
     }
 
@@ -93,6 +97,8 @@ impl Frame {
 pub enum Wallpaper {
     Video(video::VideoDecoder),
     Still(still::StillDecoder),
+    /// A pixel shader, which is not decoded at all — see `procedural.rs`.
+    Shader(procedural::ShaderDecoder),
 }
 
 impl Wallpaper {
@@ -107,7 +113,9 @@ impl Wallpaper {
         path: &Path,
         max_scale: (u32, u32),
     ) -> windows::core::Result<Self> {
-        let wallpaper = if still::is_still(path) {
+        let wallpaper = if procedural::is_shader(path) {
+            Wallpaper::Shader(procedural::ShaderDecoder::open(device, path, max_scale)?)
+        } else if still::is_still(path) {
             Wallpaper::Still(still::StillDecoder::open(device, path, max_scale)?)
         } else {
             Wallpaper::Video(video::VideoDecoder::open(device, path, max_scale)?)
@@ -121,7 +129,14 @@ impl Wallpaper {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        println!("decode: {name} at {width}x{height}");
+        println!(
+            "{}: {name} at {width}x{height}",
+            if matches!(wallpaper, Wallpaper::Shader(_)) {
+                "shader"
+            } else {
+                "decode"
+            }
+        );
 
         Ok(wallpaper)
     }
@@ -130,6 +145,7 @@ impl Wallpaper {
         match self {
             Wallpaper::Video(d) => d.frame(),
             Wallpaper::Still(d) => d.frame(),
+            Wallpaper::Shader(d) => d.frame(),
         }
     }
 
@@ -140,6 +156,58 @@ impl Wallpaper {
         match self {
             Wallpaper::Video(d) => d.loops(),
             Wallpaper::Still(d) => d.loops(),
+            Wallpaper::Shader(d) => d.loops(),
+        }
+    }
+
+    /// A still photograph: one that has no motion of its own and will show
+    /// the same pixels forever. An animated GIF is not one of these, and
+    /// neither is a shader.
+    ///
+    /// What asks is the slow drift in `render.rs`: it exists to put life into
+    /// a picture that has none, and applying it to something already moving
+    /// would be two motions fighting.
+    pub fn is_photograph(&self) -> bool {
+        matches!(self, Wallpaper::Still(d) if d.is_photograph())
+    }
+
+    /// The settings this wallpaper declares for itself. Only a shader has
+    /// any; everything else is a file, and a file has no opinions.
+    pub fn params(&self) -> &[procedural::ShaderParam] {
+        match self {
+            Wallpaper::Shader(d) => d.params(),
+            _ => &[],
+        }
+    }
+
+    /// Move one of those settings.
+    pub fn set_param(&mut self, name: &str, value: f32) {
+        if let Wallpaper::Shader(d) = self {
+            d.set_param(name, value);
+        }
+    }
+
+    /// Whether this wallpaper reads the sound split into bands. Nothing else
+    /// opens the loopback capture.
+    pub fn wants_bands(&self) -> bool {
+        matches!(self, Wallpaper::Shader(d) if d.wants_bands())
+    }
+
+    /// Whether this is a program rather than a file.
+    ///
+    /// What asks is the cursor: a shader is handed `iMouse` directly and may
+    /// use it whether or not the parallax effect is switched on, so the
+    /// cursor has to be read for one even when nothing else wants it.
+    pub fn is_program(&self) -> bool {
+        matches!(self, Wallpaper::Shader(_))
+    }
+
+    /// What the cursor and the meter said this frame. Only a shader is given
+    /// them directly — for everything else the compositor moves the sampling
+    /// window instead, which costs nothing.
+    pub fn set_drive(&mut self, drive: crate::compositor::Drive) {
+        if let Wallpaper::Shader(d) = self {
+            d.set_drive(drive);
         }
     }
 
@@ -148,6 +216,7 @@ impl Wallpaper {
         match self {
             Wallpaper::Video(d) => d.set_speed(speed),
             Wallpaper::Still(d) => d.set_speed(speed),
+            Wallpaper::Shader(d) => d.set_speed(speed),
         }
     }
 
@@ -156,6 +225,7 @@ impl Wallpaper {
         match self {
             Wallpaper::Video(d) => d.time_to_next(),
             Wallpaper::Still(d) => d.time_to_next(),
+            Wallpaper::Shader(d) => d.time_to_next(),
         }
     }
 
@@ -168,6 +238,7 @@ impl Wallpaper {
         match self {
             Wallpaper::Video(d) => d.update(context, elapsed),
             Wallpaper::Still(d) => d.update(context, elapsed),
+            Wallpaper::Shader(d) => d.update(context, elapsed),
         }
     }
 }

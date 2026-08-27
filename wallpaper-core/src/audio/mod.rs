@@ -15,6 +15,11 @@
 //! no hardware path for it to take.
 
 mod duck;
+mod meter;
+mod spectrum;
+
+pub use meter::Meter;
+pub use spectrum::{Spectrum, BANDS};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

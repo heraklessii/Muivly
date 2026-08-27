@@ -24,12 +24,26 @@ pub struct Stats {
     /// Frames actually presented in the last second, across every monitor.
     pub fps: f32,
 
+    /// How long this engine has been up, and how much of that it spent not
+    /// drawing at all — covered, hibernating, frozen, or waiting for somebody
+    /// to come back to their desk.
+    ///
+    /// This is the number the whole project is about, and until now it was
+    /// the one thing a user could not see. "Muivly has been running for six
+    /// hours and drew nothing for four of them" is the claim in the README,
+    /// measured on their machine rather than on ours.
+    pub uptime: Duration,
+    pub resting: Duration,
+
     taken: Instant,
     cpu_time: Duration,
     frames: u32,
     /// Loop passes that put something on screen, which is the frame rate one
     /// monitor sees.
     passes: u32,
+    /// When the last pass was accounted for, so a pass that took a long time
+    /// is counted as the time it actually took.
+    last_pass: Instant,
 }
 
 impl Default for Stats {
@@ -38,10 +52,13 @@ impl Default for Stats {
             cpu: 0.0,
             ram_mb: 0,
             fps: 0.0,
+            uptime: Duration::ZERO,
+            resting: Duration::ZERO,
             taken: Instant::now(),
             cpu_time: process_cpu_time(),
             frames: 0,
             passes: 0,
+            last_pass: Instant::now(),
         }
     }
 }
@@ -58,6 +75,22 @@ impl Stats {
         self.frames += presented as u32;
         if presented > 0 {
             self.passes += 1;
+        }
+    }
+
+    /// Account for the wall-clock time since the last pass, and whether the
+    /// engine spent it drawing.
+    ///
+    /// Measured in time rather than in passes because the passes are not the
+    /// same length: a resting engine wakes twice a second and a busy one
+    /// thirty times, so counting passes would make resting look like a
+    /// rounding error rather than like most of the day.
+    pub fn rested(&mut self, resting: bool) {
+        let since = self.last_pass.elapsed();
+        self.last_pass = Instant::now();
+        self.uptime += since;
+        if resting {
+            self.resting += since;
         }
     }
     /// Refresh the numbers if enough time has passed. Returns true when they

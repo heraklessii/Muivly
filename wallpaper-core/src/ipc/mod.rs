@@ -28,6 +28,30 @@
 //!   fade <milliseconds>       -> `ok`   (0 = cut)
 //!   span <on|off>             -> `ok`   (one wallpaper across every screen)
 //!   hotkeys <on|off>          -> `ok`
+//!   hibernate <seconds>       -> `ok`   (0 = keep the decoders open)
+//!   optimize <path>           -> `ok` or `err busy`; progress arrives on
+//!                                the `optimize` line of `status`
+//!   motion <reactive> <parallax> -> `ok`   (0-1 each; 0 0 is off)
+//!   memory <megabytes>        -> `ok`   (0 = no budget)
+//!   apps <name>|<name>        -> `ok`   (freeze while one is in front)
+//!   rules <rule>;<rule>       -> `ok`   (`t<minutes>|<path>...` by clock,
+//!                                `d<0|1>|<path>...` by Windows theme;
+//!                                an empty list clears them)
+//!   idle <seconds>            -> `ok`   (stand still after this long with
+//!                                no keyboard or mouse; 0 never)
+//!   busy <fps>                -> `ok`   (the rate while the machine is busy
+//!                                with something else; 0 keeps one rate)
+//!   reducemotion <on|off>     -> `ok`   (honour Windows' animation setting)
+//!   drift <0-1>               -> `ok`   (how far a photograph drifts)
+//!   accent <on|off>           -> `ok`   (the Windows accent colour follows
+//!                                the wallpaper; the user's own colours are
+//!                                backed up and put back when this goes off)
+//!   shader <path>|<name>=<v>  -> `ok`   (one shader file's own settings, as
+//!                                declared by `// param` lines in the file;
+//!                                they arrive on the `shader` status line)
+//!   scene save <name>         -> `ok`   (what is on every screen, named)
+//!   scene load <name>         -> `ok`
+//!   scene delete <name>       -> `ok`
 //!   freeze <on|off|toggle>    -> `ok`   (the last frame stays on screen)
 //!   own <monitor> <fit|-> <fps> <bright|-> <sat> <blur> -> `ok`
 //!                                ("follow the desktop" is `-` in a slot,
@@ -42,6 +66,7 @@
 //! Paths are separated by `|` rather than spaces, and never quoted: Windows
 //! paths contain spaces constantly but never a pipe character.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -57,7 +82,7 @@ use windows::Win32::System::Pipes::{
 };
 
 use crate::caps::GpuProfile;
-use crate::compositor::{Fit, Overrides, Sound, Visual};
+use crate::compositor::{Fit, Motion, Overrides, Rule, Sound, Visual};
 use crate::power::battery::PowerPolicy;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\muivly";
@@ -92,6 +117,38 @@ pub enum Command {
     /// One wallpaper stretched across every screen.
     SetSpan(bool),
     SetHotkeys(bool),
+    /// How long the desktop stays out of sight before the decoders are
+    /// handed back. Zero keeps them open.
+    SetHibernate(u64),
+    /// How far the wallpaper answers to sound and to the cursor.
+    SetMotion(Motion),
+    /// A memory budget in megabytes; 0 leaves the tier's own cap alone.
+    SetMemory(u32),
+    /// Applications that freeze the wallpaper while they are in front.
+    SetApps(Vec<String>),
+    /// Wallpapers that change themselves, by clock or by theme.
+    SetRules(Vec<Rule>),
+    /// How long the machine may sit untouched before the wallpaper stands
+    /// still. Zero never does.
+    SetIdle(u64),
+    /// The frame rate to fall to while the machine is busy with something
+    /// else. Zero keeps one rate.
+    SetBusyFps(u32),
+    /// Whether to stand still when Windows asks for fewer animations.
+    SetReduceMotion(bool),
+    /// How far a photograph drifts on its own, 0-1.
+    SetDrift(f32),
+    /// Whether the Windows accent colour follows the wallpaper.
+    SetAccent(bool),
+    /// One shader file's own settings, by the names the file declared.
+    SetShaderParams {
+        path: PathBuf,
+        values: HashMap<String, f32>,
+    },
+    /// Save what is on screen now under a name, recall it, or forget it.
+    SaveScene(String),
+    LoadScene(String),
+    DeleteScene(String),
     /// Settings one monitor keeps for itself. The default value hands it
     /// back to the desktop's.
     SetOverrides {
@@ -135,6 +192,43 @@ pub struct Status {
     pub fade_ms: u64,
     pub span: bool,
     pub hotkeys: bool,
+    /// How long out of sight before the decoders are handed back; 0 never.
+    pub hibernate_secs: u64,
+    /// Whether they are handed back right now.
+    pub hibernating: bool,
+    /// How far the wallpaper answers to sound, and to the cursor.
+    pub reactive: f32,
+    pub parallax: f32,
+    /// The memory budget in megabytes; 0 is none.
+    pub memory_mb: u32,
+    /// The application list and the rule list, in the same written form the
+    /// commands take. Sent on their own lines: both contain spaces.
+    pub apps: String,
+    pub rules: String,
+    /// One line per saved arrangement, in the form `scene` takes.
+    pub scenes: Vec<String>,
+    /// One line per shader on screen that declares settings of its own:
+    /// `<path>|<name>,<min>,<max>,<default>,<value>,<label>|...`
+    pub shaders: Vec<String>,
+    /// How long the machine may sit untouched before the wallpaper stands
+    /// still, and whether it is standing still right now.
+    pub idle_secs: u64,
+    pub away: bool,
+    /// The frame rate while the machine is busy, whether it is, and how busy
+    /// the last sample found it.
+    pub busy_fps: u32,
+    pub busy: bool,
+    pub load: f32,
+    /// Whether Windows' reduce-motion setting is honoured.
+    pub reduce_motion: bool,
+    /// How far a photograph drifts on its own, 0-1.
+    pub drift: f32,
+    /// Whether the Windows accent colour follows the wallpaper.
+    pub accent: bool,
+    /// How long this engine has been up, and how much of that it spent not
+    /// drawing anything at all.
+    pub uptime_secs: u64,
+    pub resting_secs: u64,
     /// The frame rate cap while unplugged; 0 means the same as plugged in.
     pub battery_fps: u32,
     pub pause_on_saver: bool,
@@ -148,6 +242,9 @@ pub struct Status {
     /// Frames actually presented per second, which is not the target fps:
     /// a 24 fps clip on a 60 fps setting presents 24 times.
     pub real_fps: f32,
+    /// A clip being rewritten smaller, if one is. Sent on its own line for
+    /// the same reason as `error`: it contains paths.
+    pub optimize: Option<crate::optimize::Job>,
     /// The last thing that went wrong, in words meant for the user. Sent on
     /// its own line because a message contains spaces.
     pub error: Option<String>,
@@ -173,6 +270,25 @@ impl Default for Status {
             fade_ms: 400,
             span: false,
             hotkeys: true,
+            hibernate_secs: 20,
+            hibernating: false,
+            reactive: 0.0,
+            parallax: 0.0,
+            memory_mb: 0,
+            apps: String::new(),
+            rules: String::new(),
+            scenes: Vec::new(),
+            shaders: Vec::new(),
+            idle_secs: 300,
+            away: false,
+            busy_fps: 10,
+            busy: false,
+            load: 0.0,
+            reduce_motion: true,
+            drift: 0.0,
+            accent: false,
+            uptime_secs: 0,
+            resting_secs: 0,
             battery_fps: 24,
             pause_on_saver: true,
             on_battery: false,
@@ -181,6 +297,7 @@ impl Default for Status {
             cpu: 0.0,
             ram_mb: 0,
             real_fps: 0.0,
+            optimize: None,
             error: None,
             monitors: Vec::new(),
         }
@@ -314,9 +431,13 @@ fn handle(
             let mut out = format!(
                 "ok fps={} paused={} frozen={} fit={} interval={} brightness={:.3} \
                  saturation={:.3} blur={:.3} sound={} volume={:.3} duck={} \
-                 ducking={} speed={:.2} fade={} span={} hotkeys={} batfps={} \
+                 ducking={} speed={:.2} fade={} span={} hotkeys={} \
+                 hibernate={} hibernating={} reactive={:.2} parallax={:.2} \
+                 memory={} batfps={} \
                  batfreeze={} battery={} saver={} charge={} cpu={:.1} \
-                 ram={} realfps={:.1}\n",
+                 ram={} realfps={:.1} idle={} away={} busyfps={} busy={} \
+                 load={:.1} reducemotion={} drift={:.2} accent={} \
+                 uptime={} resting={}\n",
                 status.fps,
                 status.paused,
                 status.frozen,
@@ -333,6 +454,11 @@ fn handle(
                 status.fade_ms,
                 status.span,
                 status.hotkeys,
+                status.hibernate_secs,
+                status.hibernating,
+                status.reactive,
+                status.parallax,
+                status.memory_mb,
                 status.battery_fps,
                 status.pause_on_saver,
                 status.on_battery,
@@ -341,6 +467,16 @@ fn handle(
                 status.cpu,
                 status.ram_mb,
                 status.real_fps,
+                status.idle_secs,
+                status.away,
+                status.busy_fps,
+                status.busy,
+                status.load,
+                status.reduce_motion,
+                status.drift,
+                status.accent,
+                status.uptime_secs,
+                status.resting_secs,
             );
 
             for monitor in &status.monitors {
@@ -379,6 +515,41 @@ fn handle(
                     },
                     visual.saturation,
                     visual.blur,
+                ));
+            }
+
+            // Empty almost always, so they cost a comparison rather than a
+            // line each on every poll.
+            if !status.apps.is_empty() {
+                out.push_str(&format!("apps {}\n", status.apps));
+            }
+            if !status.rules.is_empty() {
+                out.push_str(&format!("rules {}\n", status.rules));
+            }
+
+            // One line each, and absent for everybody who has never saved an
+            // arrangement or put a shader on a screen.
+            for scene in &status.scenes {
+                out.push_str(&format!("scene {scene}\n"));
+            }
+            for shader in &status.shaders {
+                out.push_str(&format!("shader {shader}\n"));
+            }
+
+            // `optimize <state> <percent> <source>|<output-or-error>`. One
+            // line rather than four keys: it is absent almost always, and
+            // when it is there the UI wants all of it at once.
+            if let Some(job) = &status.optimize {
+                let (state, detail) = match (&job.output, &job.error) {
+                    (Some(path), _) => ("done", path.display().to_string()),
+                    (_, Some(message)) => ("failed", message.clone()),
+                    _ => ("running", String::new()),
+                };
+                out.push_str(&format!(
+                    "optimize {state} {:.0} {}|{}\n",
+                    job.progress * 100.0,
+                    job.source.display(),
+                    detail
                 ));
             }
 
@@ -566,6 +737,117 @@ fn handle(
             Command::SetHotkeys(rest == "on" || rest == "true"),
         ),
 
+        // Below five seconds this would fire on an alt-tab and the user would
+        // see the reopen; an hour is long enough to mean "never" to anyone
+        // who does not want it at all.
+        // `motion <reactive> <parallax>`, both 0-1. One command for the same
+        // reason `visual` is one: they sit on one panel and are dragged
+        // together.
+        "motion" => {
+            let numbers: Vec<f32> = rest.split(' ').filter_map(|n| n.parse().ok()).collect();
+            let [reactive, parallax] = numbers[..] else {
+                return "err usage: motion <reactive> <parallax>\n".to_string();
+            };
+            if !(0.0..=1.0).contains(&reactive) || !(0.0..=1.0).contains(&parallax) {
+                return "err reactive and parallax are 0-1\n".to_string();
+            }
+            send(commands, Command::SetMotion(Motion { reactive, parallax }))
+        }
+
+        // Under 100 MB there is no frame size that fits and the cap would
+        // just mean 720p for everybody; past 4 GB it stops being a budget.
+        "memory" => match rest.parse::<u32>() {
+            Ok(mb) if mb == 0 || (100..=4096).contains(&mb) => {
+                send(commands, Command::SetMemory(mb))
+            }
+            _ => "err memory must be 0 or 100-4096 MB\n".to_string(),
+        },
+
+        // An empty list is how the feature is switched off, so this one
+        // takes no arguments at all as a valid message.
+        "apps" => send(
+            commands,
+            Command::SetApps(crate::power::apps::parse_list(rest)),
+        ),
+
+        "rules" => send(
+            commands,
+            Command::SetRules(crate::compositor::parse_rules(rest)),
+        ),
+
+        // A minute is the shortest that is not simply "while you read a
+        // paragraph"; four hours is long enough to mean "never" for anybody
+        // who does not want it.
+        "idle" => match rest.parse::<u64>() {
+            Ok(secs) if secs == 0 || (60..=14400).contains(&secs) => {
+                send(commands, Command::SetIdle(secs))
+            }
+            _ => "err idle must be 0 or 60-14400 seconds\n".to_string(),
+        },
+
+        "busy" => match rest.parse::<u32>() {
+            Ok(fps) if fps == 0 || (1..=60).contains(&fps) => {
+                send(commands, Command::SetBusyFps(fps))
+            }
+            _ => "err busy must be 0 or 1-60 fps\n".to_string(),
+        },
+
+        "reducemotion" => send(
+            commands,
+            Command::SetReduceMotion(rest == "on" || rest == "true"),
+        ),
+
+        "drift" => match rest.parse::<f32>() {
+            Ok(drift) if (0.0..=1.0).contains(&drift) => send(commands, Command::SetDrift(drift)),
+            _ => "err drift must be 0-1\n".to_string(),
+        },
+
+        "accent" => send(commands, Command::SetAccent(rest == "on" || rest == "true")),
+
+        // `shader <path>|<name>=<value>|<name>=<value>`. The path is first
+        // because it is the only field that may contain spaces.
+        "shader" => {
+            let mut parts = rest.split('|');
+            let Some(path) = parts.next().filter(|p| !p.is_empty()) else {
+                return "err usage: shader <path>|<name>=<value>\n".to_string();
+            };
+
+            let values: HashMap<String, f32> = parts
+                .filter_map(|field| field.split_once('='))
+                .filter_map(|(name, value)| Some((name.to_string(), value.parse().ok()?)))
+                .collect();
+            if values.is_empty() {
+                return "err no settings in that message\n".to_string();
+            }
+
+            send(
+                commands,
+                Command::SetShaderParams {
+                    path: PathBuf::from(path),
+                    values,
+                },
+            )
+        }
+
+        // `scene save|load|delete <name>`. One verb with three actions
+        // rather than three verbs, because they are one feature and a name
+        // is all any of them takes.
+        "scene" => match rest.split_once(' ') {
+            Some(("save", name)) if crate::compositor::valid_scene_name(name) => {
+                send(commands, Command::SaveScene(name.to_string()))
+            }
+            Some(("load", name)) => send(commands, Command::LoadScene(name.to_string())),
+            Some(("delete", name)) => send(commands, Command::DeleteScene(name.to_string())),
+            _ => "err usage: scene <save|load|delete> <name>\n".to_string(),
+        },
+
+        "hibernate" => match rest.parse::<u64>() {
+            Ok(secs) if secs == 0 || (5..=3600).contains(&secs) => {
+                send(commands, Command::SetHibernate(secs))
+            }
+            _ => "err hibernate must be 0 or 5-3600 seconds\n".to_string(),
+        },
+
         "freeze" => {
             let frozen = match rest {
                 "on" | "true" => true,
@@ -589,6 +871,39 @@ fn handle(
             }
             Err(message) => format!("err {message}\n"),
         },
+
+        // Rewriting a clip is not a render-loop concern: it opens a device
+        // of its own, runs for a minute, and reports through the status the
+        // UI is already polling. So it starts here rather than travelling
+        // through the command channel and blocking the wallpaper.
+        "optimize" if !rest.is_empty() => {
+            let source = PathBuf::from(rest);
+            if !source.is_file() {
+                return "err no such file\n".to_string();
+            }
+
+            // The largest screen decides the size: a clip rewritten for the
+            // small monitor would be upscaled on the big one, which is the
+            // one thing worse than decoding too many pixels.
+            let size = profile
+                .adapters
+                .iter()
+                .flat_map(|adapter| &adapter.outputs)
+                .map(|monitor| (monitor.width, monitor.height))
+                .max_by_key(|(width, height)| *width as u64 * *height as u64)
+                .unwrap_or((1920, 1080));
+
+            if crate::optimize::start(
+                source,
+                size,
+                profile.rec.target_fps.max(1),
+                Arc::clone(status),
+            ) {
+                "ok\n".to_string()
+            } else {
+                "err a clip is already being rewritten\n".to_string()
+            }
+        }
 
         "quit" => send(commands, Command::Quit),
 

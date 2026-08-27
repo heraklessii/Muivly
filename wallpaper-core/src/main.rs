@@ -2,10 +2,12 @@
 // background service; the settings UI (wallpaper-ui) is a separate process.
 
 mod audio;
+mod bench;
 mod caps;
 mod compositor;
 mod decoder;
 mod ipc;
+mod optimize;
 mod power;
 mod session;
 
@@ -35,6 +37,10 @@ OPTIONS:
     --caps       Print the detected hardware profile and exit.
                  Paste this into a bug report.
     --diag       Dump the desktop window tree (Progman/WorkerW layout).
+    --benchmark <VIDEO> [SECONDS]
+                 Play a wallpaper for a while and print what it cost on
+                 this machine: CPU, memory and frames presented. Thirty
+                 seconds unless another number is given.
     -V, --version
     -h, --help
 ";
@@ -47,10 +53,35 @@ fn main() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
-    let arg = std::env::args().nth(1);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let arg = args.first().cloned();
     match arg.as_deref() {
         Some("--caps") => print!("{}", caps::probe().summary()),
         Some("--diag") => compositor::dump_window_tree(),
+
+        // A benchmark is the engine, run for a while, measured. It claims
+        // the same single-instance lock as an ordinary run: two engines
+        // drawing to one desktop would measure each other.
+        Some("--benchmark") => {
+            let Some(video) = args.get(1) else {
+                eprintln!("usage: muivly-core --benchmark <VIDEO> [SECONDS]");
+                std::process::exit(2);
+            };
+            let seconds = args
+                .get(2)
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(bench::DEFAULT_SECONDS);
+
+            if !claim_single_instance() {
+                eprintln!("muivly-core is already running; stop it before measuring");
+                std::process::exit(2);
+            }
+
+            unsafe {
+                let _ = SetConsoleCtrlHandler(Some(ctrl_handler), true);
+            }
+            std::process::exit(bench::run(PathBuf::from(video), seconds));
+        }
         Some("-V" | "--version") => println!("muivly-core {}", env!("CARGO_PKG_VERSION")),
         Some("-h" | "--help") => print!("{HELP}"),
         Some(other) if other.starts_with('-') => {

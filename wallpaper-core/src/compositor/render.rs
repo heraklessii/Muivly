@@ -28,10 +28,11 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11Texture2D, ID3D11VertexShader, D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_RENDER_TARGET,
     D3D11_BIND_SHADER_RESOURCE, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE,
     D3D11_BLEND_OP_ADD, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_ZERO, D3D11_BUFFER_DESC,
-    D3D11_COLOR_WRITE_ENABLE_ALL, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_SAMPLER_DESC,
-    D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_TEXTURE_ADDRESS_CLAMP,
-    D3D11_USAGE_DEFAULT, D3D11_VIEWPORT,
+    D3D11_COLOR_WRITE_ENABLE_ALL, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_MAP_READ, D3D11_SAMPLER_DESC, D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA,
+    D3D11_TEXTURE2D_DESC, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
+    D3D11_VIEWPORT,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
@@ -173,6 +174,37 @@ impl Default for Visual {
             blur: 0.0,
         }
     }
+}
+
+/// How much the wallpaper answers to things outside the file.
+///
+/// Both are amounts, not switches, and both are zero by default — a
+/// wallpaper that moves when nothing asked it to is a distraction, and the
+/// machines this project is for are the ones where a distraction costs
+/// something. At zero neither is measured at all: no meter is opened and
+/// the cursor is never asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Motion {
+    /// How far the picture answers to the sound coming out of the machine.
+    /// 0 is off, 1 is as far as it goes.
+    pub reactive: f32,
+    /// How far the picture shifts under the cursor. Same range.
+    pub parallax: f32,
+}
+
+/// The measured half of the pair: what the meter and the cursor actually
+/// said this frame, which the compositor reads and the renderer applies.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Drive {
+    /// The smoothed output level, 0-1.
+    pub level: f32,
+    /// Where the cursor is on the desktop, -1 to 1 on each axis, with the
+    /// centre at zero.
+    pub cursor: (f32, f32),
+    /// The same sound split into bands, bass first, each 0-1. Only a shader
+    /// reads these, and only one that asked — everything here is zero unless
+    /// something on screen declared it wanted them.
+    pub bands: [f32; crate::audio::BANDS],
 }
 
 /// What one pass of `draw` actually did.
@@ -338,6 +370,21 @@ pub struct Renderer {
     decode: crate::caps::DecodeCaps,
     /// The largest frame any decoder here is asked to produce.
     max_scale: (u32, u32),
+    /// How much the wallpaper answers to sound and to the cursor.
+    motion: Motion,
+    /// What they measured this frame.
+    drive: Drive,
+    /// How far a photograph drifts on its own. Zero leaves it still.
+    drift: f32,
+    /// Where each shader file's own settings are set, keyed by path and then
+    /// by the name the file declared. Held here rather than in the decoder
+    /// because a decoder is dropped whenever the desktop is covered for long
+    /// enough, and a slider that reset itself behind a game would be a bug.
+    shader_params: HashMap<PathBuf, HashMap<String, f32>>,
+    /// Set while every decoder has been handed back because nothing on this
+    /// adapter has been visible for long enough to be worth the memory. See
+    /// `set_idle`.
+    idle: bool,
     /// Files that would not open, waiting to be shown to the user once.
     errors: Vec<String>,
 }
@@ -425,6 +472,11 @@ impl Renderer {
                 fade: Duration::ZERO,
                 span: None,
                 max_scale,
+                motion: Motion::default(),
+                drive: Drive::default(),
+                drift: 0.0,
+                shader_params: HashMap::new(),
+                idle: false,
                 decode,
                 errors: Vec::new(),
             })
@@ -477,6 +529,155 @@ impl Renderer {
                 return;
             }
             target.overrides = overrides;
+            target.redraw = true;
+        }
+    }
+
+    /// How far the wallpaper is allowed to answer to sound and the cursor.
+    pub fn set_motion(&mut self, motion: Motion) {
+        if self.motion == motion {
+            return;
+        }
+        self.motion = motion;
+        for target in &mut self.targets {
+            target.redraw = true;
+        }
+    }
+
+    /// What the meter and the cursor said this frame.
+    ///
+    /// Redrawing is the whole cost of these effects on a still frame, so it
+    /// is asked for only when the numbers moved enough to change a pixel.
+    /// Without the threshold a meter reading its own noise floor would
+    /// redraw every monitor, every frame, forever — which is exactly the
+    /// bill this project refuses to send a user who has both effects off.
+    pub fn set_drive(&mut self, drive: Drive) {
+        let moved = (drive.level - self.drive.level).abs() > 0.004
+            || (drive.cursor.0 - self.drive.cursor.0).abs() > 0.004
+            || (drive.cursor.1 - self.drive.cursor.1).abs() > 0.004;
+
+        self.drive = drive;
+
+        // A shader reads these itself and redraws every frame regardless, so
+        // it is handed the numbers whatever the threshold said. Everything
+        // else ignores this call.
+        for decoder in self.decoders.values_mut() {
+            decoder.set_drive(drive);
+        }
+
+        if self.motion == Motion::default() || !moved {
+            return;
+        }
+        for target in &mut self.targets {
+            target.redraw = true;
+        }
+    }
+
+    /// How far a photograph is allowed to drift on its own, 0-1.
+    ///
+    /// Only photographs: a video, a GIF and a shader are already moving, and
+    /// a second motion on top of the first is two things fighting rather than
+    /// one picture that breathes.
+    pub fn set_drift(&mut self, drift: f32) {
+        let drift = drift.clamp(0.0, 1.0);
+        if (self.drift - drift).abs() < f32::EPSILON {
+            return;
+        }
+        self.drift = drift;
+        for target in &mut self.targets {
+            target.redraw = true;
+        }
+    }
+
+    /// Set one shader file's own settings, by the names it declared.
+    ///
+    /// Kept for files that are not open: a user adjusting a shader that is
+    /// only on the second monitor, or one that is hibernating, still expects
+    /// the value to be there when it comes back.
+    pub fn set_shader_params(&mut self, path: &Path, values: HashMap<String, f32>) {
+        let slot = self.shader_params.entry(path.to_path_buf()).or_default();
+        for (name, value) in values {
+            slot.insert(name.clone(), value);
+        }
+
+        let Some(decoder) = self.decoders.get_mut(path) else {
+            return;
+        };
+        let wanted: Vec<(String, f32)> = self
+            .shader_params
+            .get(path)
+            .map(|values| values.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .unwrap_or_default();
+        for (name, value) in wanted {
+            decoder.set_param(&name, value);
+        }
+    }
+
+    /// What every open wallpaper on this adapter declares it wants sliders
+    /// for, with where each one is set right now. Empty for everything that
+    /// is not a shader, which is almost everything.
+    pub fn declared_params(&self) -> Vec<(PathBuf, Vec<(crate::decoder::ShaderParam, f32)>)> {
+        self.decoders
+            .iter()
+            .filter(|(_, decoder)| !decoder.params().is_empty())
+            .map(|(path, decoder)| {
+                let values = self.shader_params.get(path);
+                let params = decoder
+                    .params()
+                    .iter()
+                    .map(|param| {
+                        let value = values
+                            .and_then(|set| set.get(&param.name))
+                            .copied()
+                            .unwrap_or(param.default);
+                        (param.clone(), value)
+                    })
+                    .collect();
+                (path.clone(), params)
+            })
+            .collect()
+    }
+
+    /// Whether anything on screen here reads the sound split into bands.
+    /// Nothing else opens the loopback capture.
+    pub fn wants_bands(&self) -> bool {
+        self.showing().any(|decoder| decoder.wants_bands())
+    }
+
+    /// Whether anything on screen here is a shader.
+    ///
+    /// A shader is handed the cursor directly and may use it whether or not
+    /// the parallax effect is switched on, so this is what decides whether
+    /// the cursor is read at all.
+    pub fn has_shader(&self) -> bool {
+        self.showing().any(|decoder| decoder.is_program())
+    }
+
+    /// The decoders behind what is actually on a screen here — which is not
+    /// every open decoder: one belonging to a monitor the user switched off
+    /// is open until the next sync and is not on screen.
+    fn showing(&self) -> impl Iterator<Item = &Wallpaper> {
+        self.targets
+            .iter()
+            .filter(|t| t.enabled)
+            .filter_map(|t| t.video.as_ref())
+            .filter_map(|path| self.decoders.get(path))
+    }
+
+    /// Change the frame size cap, reopening whatever is playing.
+    ///
+    /// The cap is baked into a decoder when it opens — it is the size the
+    /// video processor was asked for — so a new one only takes effect on a
+    /// reopen. That is a visible restart of every clip, which is why this
+    /// does nothing at all unless the number actually changed.
+    pub fn set_max_scale(&mut self, max_scale: (u32, u32)) {
+        if self.max_scale == max_scale {
+            return;
+        }
+        self.max_scale = max_scale;
+        self.decoders.clear();
+        self.sync_decoders();
+        for target in &mut self.targets {
             target.redraw = true;
         }
     }
@@ -564,7 +765,15 @@ impl Renderer {
                 .and_then(|path| decoders.get(path))
                 .map(|decoder| decoder.frame())
             {
-                let params = params_for(target, frame.size(), fit, visual, span, 0.0);
+                // No motion on a captured frame: the capture is what was on
+                // screen, and re-applying a pulse to it would fade out from
+                // a picture the user never saw.
+                let look = Look {
+                    fit,
+                    visual,
+                    ..Look::default()
+                };
+                let params = params_for(target, frame.size(), look, span, 0.0);
                 match unsafe { capture(device, context, &shaders, target, &frame, &params) } {
                     Ok(view) => {
                         target.fade = Some(Fade {
@@ -600,6 +809,101 @@ impl Renderer {
         Ok(())
     }
 
+    /// Hand every decoder back, or open them again.
+    ///
+    /// A covered desktop already costs no CPU — the render loop stops the
+    /// moment nothing is visible. What it does keep is the expensive part:
+    /// two decoders' picture buffers and Media Foundation's thread pool,
+    /// which on a 4K clip is most of the memory this process uses. Behind a
+    /// fullscreen game that is memory held for a picture nobody can see for
+    /// as long as the game is open.
+    ///
+    /// Nothing is captured on the way out. The surfaces stay up and are not
+    /// presented to, so the front buffer keeps showing the last frame — the
+    /// screen looks exactly as it did, which is the whole trick.
+    ///
+    /// Waking is a reopen from the start of the file. A wallpaper loops, so
+    /// there is no position worth restoring, and seeking back to one would
+    /// cost more than the frames it saved.
+    pub fn set_idle(&mut self, idle: bool) {
+        if self.idle == idle {
+            return;
+        }
+        self.idle = idle;
+
+        if idle {
+            self.decoders.clear();
+        } else {
+            self.sync_decoders();
+            // Nothing has been drawn since the decoders went away, and the
+            // pixels on screen came from a decoder that no longer exists.
+            for target in &mut self.targets {
+                target.redraw = true;
+            }
+        }
+    }
+
+    /// The average colour of what one monitor is showing, as BGR bytes.
+    ///
+    /// Drawn into a 16 by 9 texture and read back, which is 144 pixels — the
+    /// GPU does the averaging as part of the scale, and the trip through
+    /// system memory is half a kilobyte. This is the one place in the project
+    /// that reads pixels back at all, and it happens when a wallpaper
+    /// changes rather than when a frame is drawn: at most a few times an
+    /// hour, and never at all unless the accent colour is switched on.
+    ///
+    /// The frame is drawn through the same fit, grade and blur the screen
+    /// gets, so the colour is the one the user is actually looking at rather
+    /// than the file's.
+    pub fn dominant_colour(&self, device_name: &str) -> Option<[u8; 3]> {
+        const WIDE: u32 = 16;
+        const HIGH: u32 = 9;
+
+        let target = self
+            .targets
+            .iter()
+            .find(|t| t.monitor.device_name == device_name)
+            .filter(|t| t.enabled)?;
+        let decoder = self.decoders.get(target.video.as_ref()?)?;
+        let frame = decoder.frame();
+
+        let shaders = Shaders {
+            vs: &self.vs,
+            ps_video: &self.ps_video,
+            ps_image: &self.ps_image,
+            ps_fade: &self.ps_fade,
+            sampler: &self.sampler,
+            params: &self.params,
+            blend: &self.blend,
+        };
+
+        let fit = target.overrides.fit.unwrap_or(self.fit);
+        let visual = target.overrides.visual.unwrap_or(self.visual);
+        let params = params_for(
+            target,
+            frame.size(),
+            Look {
+                fit,
+                visual,
+                ..Look::default()
+            },
+            self.span,
+            0.0,
+        );
+
+        unsafe {
+            average_colour(
+                &self.device,
+                &self.context,
+                &shaders,
+                &frame,
+                &params,
+                (WIDE, HIGH),
+            )
+        }
+        .ok()
+    }
+
     /// Anything that went wrong since the last call, in words a user can
     /// read. Draining rather than reading: a message is shown once.
     pub fn take_errors(&mut self) -> Vec<String> {
@@ -616,6 +920,14 @@ impl Renderer {
     /// the wallpaper down on every other monitor, so the monitor is cleared,
     /// the reason is recorded for the UI, and the engine carries on.
     fn sync_decoders(&mut self) {
+        // Idle is stronger than any assignment: a wallpaper chosen while the
+        // desktop is covered is remembered, not opened. It gets its decoder
+        // when the desktop comes back.
+        if self.idle {
+            self.decoders.clear();
+            return;
+        }
+
         loop {
             let wanted: Vec<PathBuf> = self
                 .targets
@@ -636,6 +948,24 @@ impl Renderer {
             match Wallpaper::open(&self.device, &path, self.max_scale) {
                 Ok(mut decoder) => {
                     decoder.set_speed(self.speed);
+                    decoder.set_drive(self.drive);
+
+                    // A shader's own settings, remembered from the last time
+                    // it was open — or its own defaults, written down here so
+                    // the settings window has something to show.
+                    let slot = self.shader_params.entry(path.clone()).or_default();
+                    let wanted: Vec<(String, f32)> = decoder
+                        .params()
+                        .iter()
+                        .map(|param| {
+                            let value = *slot.entry(param.name.clone()).or_insert(param.default);
+                            (param.name.clone(), value)
+                        })
+                        .collect();
+                    for (name, value) in wanted {
+                        decoder.set_param(&name, value);
+                    }
+
                     self.decoders.insert(path, decoder);
                 }
                 Err(e) => {
@@ -687,7 +1017,17 @@ impl Renderer {
             .filter(|t| t.enabled)
             .filter_map(|t| t.video.as_ref())
             .filter_map(|path| self.decoders.get(path))
-            .map(|decoder| decoder.time_to_next())
+            .map(|decoder| {
+                // A photograph asks for an hour, because its pixels will
+                // never change. While it is drifting the pixels on screen do
+                // change — the sampling window is moving over them — so it is
+                // due as often as anything else is.
+                if self.drift > 0.0 && decoder.is_photograph() {
+                    Duration::ZERO
+                } else {
+                    decoder.time_to_next()
+                }
+            })
             .min()
     }
 
@@ -778,6 +1118,8 @@ impl Renderer {
         };
         let (context, decoders) = (&self.context, &self.decoders);
         let (global_fit, global_visual, span) = (self.fit, self.visual, self.span);
+        let (motion, drive) = (self.motion, self.drive);
+        let drift = self.drift;
         let now = Instant::now();
 
         unsafe {
@@ -823,13 +1165,23 @@ impl Renderer {
                 }
                 let fading = target.fade.is_some();
 
+                // A drifting photograph has no new frame — the frame is the
+                // same one it will always be — but the window being sampled
+                // out of it has moved, so the screen is out of date.
+                let drifting = drift > 0.0
+                    && target
+                        .video
+                        .as_ref()
+                        .and_then(|path| decoders.get(path))
+                        .is_some_and(|decoder| decoder.is_photograph());
+
                 // Nothing new to show and nothing else has changed: the
                 // pixels already on screen are the right ones.
                 let fresh = target
                     .video
                     .as_ref()
                     .is_some_and(|path| advanced.contains(path));
-                if !fresh && !target.redraw && !fading {
+                if !fresh && !target.redraw && !fading && !drifting {
                     live += 1;
                     continue;
                 }
@@ -839,7 +1191,19 @@ impl Renderer {
                 // screen with settings of its own needs its own everything.
                 let fit = target.overrides.fit.unwrap_or(global_fit);
                 let visual = target.overrides.visual.unwrap_or(global_visual);
-                let params = params_for(target, frame.size(), fit, visual, span, time);
+                let params = params_for(
+                    target,
+                    frame.size(),
+                    Look {
+                        fit,
+                        visual,
+                        motion,
+                        drive,
+                        drift: if drifting { drift } else { 0.0 },
+                    },
+                    span,
+                    time,
+                );
 
                 draw_frame(
                     context,
@@ -891,15 +1255,37 @@ impl Renderer {
     }
 }
 
+/// Everything that shapes one monitor's picture, as one value.
+///
+/// Four settings that are decided per monitor and read together on every
+/// draw. Passed as a bundle because passing them one by one is how a caller
+/// eventually hands `params_for` the desktop's visual and the monitor's fit.
+#[derive(Debug, Clone, Copy, Default)]
+struct Look {
+    fit: Fit,
+    visual: Visual,
+    motion: Motion,
+    drive: Drive,
+    /// How far a photograph drifts on its own. Zero for everything that is
+    /// already moving.
+    drift: f32,
+}
+
 /// Everything the shader needs to know about one monitor showing one frame.
 fn params_for(
     target: &Target,
     source: (u32, u32),
-    fit: Fit,
-    visual: Visual,
+    look: Look,
     span: Option<Rect>,
     time: f32,
 ) -> Params {
+    let Look {
+        fit,
+        visual,
+        motion,
+        drive,
+        drift,
+    } = look;
     let (source_width, source_height) = source;
 
     let (uv_scale, uv_offset) = match span {
@@ -925,17 +1311,146 @@ fn params_for(
         [0.0, 0.0]
     };
 
+    // Drift first, then the pulse and the parallax on top of it: the drift is
+    // where the picture is looking and the other two are what it does from
+    // there.
+    let (uv_scale, uv_offset) = apply_drift(uv_scale, uv_offset, drift, time);
+    let (uv_scale, uv_offset) = apply_motion(uv_scale, uv_offset, motion, drive);
+
     Params {
         time,
         letterbox: if fit == Fit::Contain { 1.0 } else { 0.0 },
         uv_scale,
         uv_offset,
-        brightness: visual.brightness,
+        // The sound lifts the picture rather than pushing it: a wallpaper
+        // that dims on every beat reads as a fault, and one that brightens
+        // reads as the music.
+        brightness: visual.brightness * (1.0 + drive.level * motion.reactive * 0.5),
         saturation: visual.saturation,
         blur_step,
         alpha: 1.0,
         _pad: 0.0,
     }
+}
+
+/// The slow zoom and pan that makes a photograph look alive.
+///
+/// Same trick as the pulse and the parallax below: nothing on screen moves,
+/// the window being sampled out of the picture does. That is why this is free
+/// — it is two more terms in arithmetic the shader was doing anyway, with no
+/// second texture, no pass and no decoder. A photograph is the cheapest
+/// wallpaper Muivly can show and it stays that way with this switched on; the
+/// only cost is that the screen is redrawn on the frame rate rather than
+/// once and never again.
+///
+/// Two periods that do not divide into each other, so the picture never quite
+/// repeats a move. A minute and a half for the zoom, two and a half for the
+/// pan: slower than anybody watches, which is the point — a photograph that
+/// visibly slides is a screensaver.
+fn apply_drift(scale: [f32; 2], offset: [f32; 2], drift: f32, time: f32) -> ([f32; 2], [f32; 2]) {
+    if drift <= 0.0 {
+        return (scale, offset);
+    }
+
+    const ZOOM_PERIOD: f32 = 90.0;
+    const PAN_PERIOD: f32 = 150.0;
+    /// How far in the picture is pushed at full strength. Eight per cent is
+    /// enough to have somewhere to pan to and not enough to soften a 1080p
+    /// photograph on a 1080p screen.
+    const ZOOM: f32 = 0.08;
+
+    let turn = |period: f32| (time / period) * std::f32::consts::TAU;
+
+    // Between 1 and 1 - ZOOM*drift, so the window only ever gets smaller:
+    // sampling more than the frame has is what produces a smeared edge.
+    let breath = 0.5 - 0.5 * turn(ZOOM_PERIOD).cos();
+    let zoom = 1.0 - ZOOM * drift * breath;
+    let scaled = [scale[0] * zoom, scale[1] * zoom];
+
+    // Zooming about the centre, then drifting from there.
+    let centred = [
+        offset[0] + (scale[0] - scaled[0]) / 2.0,
+        offset[1] + (scale[1] - scaled[1]) / 2.0,
+    ];
+
+    // A circle rather than a line, so the picture comes back to where it
+    // started rather than jumping when the period ends.
+    let reach = ZOOM * 0.5 * drift;
+    let drifted = [
+        centred[0] + turn(PAN_PERIOD).sin() * reach,
+        centred[1] + turn(PAN_PERIOD * 0.75).cos() * reach,
+    ];
+
+    // The same edge guard as the motion below, and for the same reason.
+    let clamp = |offset: f32, scale: f32| {
+        if scale >= 1.0 {
+            offset
+        } else {
+            offset.clamp(0.0, 1.0 - scale)
+        }
+    };
+
+    (
+        scaled,
+        [clamp(drifted[0], scaled[0]), clamp(drifted[1], scaled[1])],
+    )
+}
+
+/// The sound and the cursor, as a change to where the frame is sampled.
+///
+/// Both work by moving the sampling window rather than by moving anything on
+/// screen: the picture is already being sampled through a scale and an
+/// offset for the fit, so a pulse and a parallax shift are two more terms in
+/// arithmetic the shader was doing anyway. Neither costs a pass, a texture,
+/// or a single extra pixel of memory.
+///
+/// Zoom, then shift, then keep the window inside the frame. That last step
+/// is what stops a hard cursor movement from sampling past the edge, which
+/// on a `cover` fit would show as a smeared band down one side.
+fn apply_motion(
+    scale: [f32; 2],
+    offset: [f32; 2],
+    motion: Motion,
+    drive: Drive,
+) -> ([f32; 2], [f32; 2]) {
+    if motion == Motion::default() {
+        return (scale, offset);
+    }
+
+    // A tenth of the frame at full strength and full volume. Past that the
+    // wallpaper is bouncing rather than breathing.
+    let pulse = 1.0 - drive.level * motion.reactive * 0.1;
+    let scaled = [scale[0] * pulse, scale[1] * pulse];
+
+    // Zooming about the centre of the window, not its corner.
+    let centred = [
+        offset[0] + (scale[0] - scaled[0]) / 2.0,
+        offset[1] + (scale[1] - scaled[1]) / 2.0,
+    ];
+
+    // Three per cent of the frame at full strength. Small on purpose: this
+    // is depth, and a wallpaper that swings under the mouse is a toy.
+    let reach = motion.parallax * 0.03;
+    let shifted = [
+        centred[0] + drive.cursor.0 * reach,
+        centred[1] + drive.cursor.1 * reach,
+    ];
+
+    // Only where the window is small enough to have somewhere to go. In
+    // `contain` the scale is above 1 and the frame is already showing bars;
+    // clamping there would fight the letterbox rather than the edge.
+    let clamp = |offset: f32, scale: f32| {
+        if scale >= 1.0 {
+            offset
+        } else {
+            offset.clamp(0.0, 1.0 - scale)
+        }
+    };
+
+    (
+        scaled,
+        [clamp(shifted[0], scaled[0]), clamp(shifted[1], scaled[1])],
+    )
 }
 
 /// Draw one decoded frame across one target.
@@ -1099,6 +1614,84 @@ unsafe fn capture(
         let mut view = None;
         device.CreateShaderResourceView(&texture, None, Some(&mut view))?;
         Ok(view.expect("CreateShaderResourceView succeeded without a view"))
+    }
+}
+
+/// Draw one frame very small and read the result back, averaged.
+///
+/// The scale is the average: a bilinear downsample to 16 by 9 is the GPU
+/// doing the arithmetic, and what comes back is small enough that summing it
+/// on the CPU is 144 additions.
+unsafe fn average_colour(
+    device: &ID3D11Device,
+    context: &ID3D11DeviceContext,
+    shaders: &Shaders<'_>,
+    frame: &Frame,
+    params: &Params,
+    size: (u32, u32),
+) -> windows::core::Result<[u8; 3]> {
+    unsafe {
+        let mut desc = D3D11_TEXTURE2D_DESC {
+            Width: size.0,
+            Height: size.1,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            ..Default::default()
+        };
+
+        let mut small = None;
+        device.CreateTexture2D(&desc, None, Some(&mut small))?;
+        let small = small.expect("CreateTexture2D succeeded without a texture");
+
+        let mut rtv = None;
+        device.CreateRenderTargetView(&small, None, Some(&mut rtv))?;
+        let rtv = rtv.expect("CreateRenderTargetView succeeded without a view");
+
+        draw_frame(context, shaders, &rtv, size, frame, params);
+
+        // Nothing can be read from a texture the GPU owns; a staging copy is
+        // the only way back to the CPU.
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+        let mut staging = None;
+        device.CreateTexture2D(&desc, None, Some(&mut staging))?;
+        let staging = staging.expect("CreateTexture2D succeeded without a texture");
+        context.CopyResource(&staging, &small);
+
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+
+        let mut totals = [0u64; 3];
+        for row in 0..size.1 as usize {
+            // The row pitch is the driver's, not the width: a 16-pixel row is
+            // padded out to whatever alignment the hardware wants.
+            let start = row * mapped.RowPitch as usize;
+            let pixels = std::slice::from_raw_parts(
+                (mapped.pData as *const u8).add(start),
+                size.0 as usize * 4,
+            );
+            for pixel in pixels.as_chunks::<4>().0 {
+                totals[0] += pixel[0] as u64;
+                totals[1] += pixel[1] as u64;
+                totals[2] += pixel[2] as u64;
+            }
+        }
+        context.Unmap(&staging, 0);
+
+        let count = (size.0 as u64 * size.1 as u64).max(1);
+        Ok([
+            (totals[0] / count) as u8,
+            (totals[1] / count) as u8,
+            (totals[2] / count) as u8,
+        ])
     }
 }
 
@@ -1321,6 +1914,108 @@ unsafe fn compile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motion_switched_off_changes_nothing() {
+        // The default path is the one every user is on. It has to be exactly
+        // the arithmetic that was there before any of this existed.
+        let (scale, offset) = apply_motion(
+            [0.5, 1.0],
+            [0.25, 0.0],
+            Motion::default(),
+            Drive {
+                level: 1.0,
+                cursor: (1.0, -1.0),
+                ..Drive::default()
+            },
+        );
+        assert_eq!(scale, [0.5, 1.0]);
+        assert_eq!(offset, [0.25, 0.0]);
+    }
+
+    #[test]
+    fn a_loud_moment_samples_a_smaller_window() {
+        // Sampling less of the frame across the same screen is a zoom in,
+        // which is what a pulse looks like.
+        let (scale, _) = apply_motion(
+            [1.0, 1.0],
+            [0.0, 0.0],
+            Motion {
+                reactive: 1.0,
+                parallax: 0.0,
+            },
+            Drive {
+                level: 1.0,
+                cursor: (0.0, 0.0),
+                ..Drive::default()
+            },
+        );
+        assert!(scale[0] < 1.0 && scale[0] > 0.85);
+    }
+
+    #[test]
+    fn a_pulse_stays_centred() {
+        let (scale, offset) = apply_motion(
+            [1.0, 1.0],
+            [0.0, 0.0],
+            Motion {
+                reactive: 1.0,
+                parallax: 0.0,
+            },
+            Drive {
+                level: 1.0,
+                cursor: (0.0, 0.0),
+                ..Drive::default()
+            },
+        );
+        // Equal margins either side: the window shrank about the middle
+        // rather than about the top-left corner.
+        assert!((offset[0] - (1.0 - scale[0]) / 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parallax_never_samples_past_the_edge() {
+        // A `cover` fit on a wider clip samples a slice, and pushing that
+        // slice off the end shows as a smeared band down one side.
+        let motion = Motion {
+            reactive: 0.0,
+            parallax: 1.0,
+        };
+        for cursor in [-1.0f32, 1.0] {
+            let (scale, offset) = apply_motion(
+                [0.5, 1.0],
+                [0.25, 0.0],
+                motion,
+                Drive {
+                    level: 0.0,
+                    cursor: (cursor, cursor),
+                    ..Drive::default()
+                },
+            );
+            assert!(offset[0] >= 0.0);
+            assert!(offset[0] + scale[0] <= 1.0 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn a_letterboxed_frame_is_not_clamped_into_its_bars() {
+        // Contain sets a scale above 1 on the long axis. Clamping that to
+        // the frame would pull the picture off centre and eat one bar.
+        let (_, offset) = apply_motion(
+            [1.0, 1.5],
+            [0.0, -0.25],
+            Motion {
+                reactive: 0.0,
+                parallax: 1.0,
+            },
+            Drive {
+                level: 0.0,
+                cursor: (0.0, -1.0),
+                ..Drive::default()
+            },
+        );
+        assert!(offset[1] < 0.0);
+    }
 
     /// A video and screen of the same shape need no adjustment at all.
     #[test]

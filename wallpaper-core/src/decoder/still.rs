@@ -210,6 +210,13 @@ impl StillDecoder {
         self.loops
     }
 
+    /// Whether this is a photograph rather than an animation: one frame,
+    /// uploaded once, that will never change again. What asks is the slow
+    /// drift in `render.rs` — see `Wallpaper::is_photograph`.
+    pub fn is_photograph(&self) -> bool {
+        self.frames.is_empty()
+    }
+
     /// Play faster or slower than the file was authored at. A still image
     /// ignores this; an animation runs at the rate asked for.
     pub fn set_speed(&mut self, speed: f32) {

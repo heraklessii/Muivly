@@ -16,6 +16,7 @@ pub use adapter::{AdapterClass, AdapterInfo, MonitorInfo};
 #[allow(unused_imports)]
 pub use decode::DecodeCaps;
 #[allow(unused_imports)]
+pub use policy::{capped, scale_for_budget};
 pub use policy::{Recommendation, Tier};
 pub use system::SystemInfo;
 

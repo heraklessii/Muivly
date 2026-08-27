@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::compositor::{Fit, Overrides, Sound, Visual};
+use crate::compositor::{Fit, Motion, Overrides, Rule, Scene, Sound, Visual};
 use crate::power::battery::PowerPolicy;
 
 /// Everything worth restoring.
@@ -33,6 +33,31 @@ pub struct Session {
     pub fade: Option<Duration>,
     pub span: Option<bool>,
     pub hotkeys: Option<bool>,
+    /// How long out of sight before the decoders are handed back.
+    pub hibernate_secs: Option<u64>,
+    /// How far the wallpaper answers to sound and to the cursor.
+    pub motion: Option<Motion>,
+    /// A memory budget in megabytes; 0 or absent is none.
+    pub memory_mb: Option<u32>,
+    /// How long the machine may sit untouched before the wallpaper stands
+    /// still.
+    pub idle_secs: Option<u64>,
+    /// The frame rate while the machine is busy with something else.
+    pub busy_fps: Option<u32>,
+    /// Whether Windows' reduce-motion setting is honoured.
+    pub reduce_motion: Option<bool>,
+    /// How far a photograph drifts on its own.
+    pub drift: Option<f32>,
+    /// Whether the Windows accent colour follows the wallpaper.
+    pub accent: Option<bool>,
+    /// Applications that freeze the wallpaper while they are in front.
+    pub apps: Vec<String>,
+    /// Wallpapers that change themselves.
+    pub rules: Vec<Rule>,
+    /// Named arrangements of wallpapers across the screens.
+    pub scenes: Vec<Scene>,
+    /// Where each shader file's own settings are set.
+    pub shader_params: HashMap<PathBuf, HashMap<String, f32>>,
     /// Settings a monitor keeps for itself, keyed by device name.
     pub overrides: HashMap<String, Overrides>,
     /// Per monitor: its device name, whether it is on, and its playlist.
@@ -124,6 +149,45 @@ fn parse(text: &str) -> Session {
             "fade" => session.fade = value.parse().ok().map(Duration::from_millis),
             "span" => session.span = Some(value == "on"),
             "hotkeys" => session.hotkeys = Some(value == "on"),
+            "hibernate" => session.hibernate_secs = value.parse().ok(),
+            "memory" => session.memory_mb = value.parse().ok(),
+            "idle" => session.idle_secs = value.parse().ok(),
+            "busy" => session.busy_fps = value.parse().ok(),
+            "reducemotion" => session.reduce_motion = Some(value == "on"),
+            "drift" => session.drift = value.parse().ok(),
+            "accent" => session.accent = Some(value == "on"),
+            "apps" => session.apps = crate::power::apps::parse_list(value),
+            "rules" => session.rules = crate::compositor::parse_rules(value),
+
+            // One line per arrangement rather than one line holding all of
+            // them: a scene already uses both separators the protocol has.
+            "scene" => {
+                if let Some(scene) = crate::compositor::parse_scene(value) {
+                    session.scenes.push(scene);
+                }
+            }
+
+            // `sparam <path>|<name>=<value>|<name>=<value>`
+            "sparam" => {
+                let mut parts = value.split('|');
+                if let Some(path) = parts.next().filter(|p| !p.is_empty()) {
+                    let values: HashMap<String, f32> = parts
+                        .filter_map(|field| field.split_once('='))
+                        .filter_map(|(name, value)| Some((name.to_string(), value.parse().ok()?)))
+                        .collect();
+                    if !values.is_empty() {
+                        session.shader_params.insert(PathBuf::from(path), values);
+                    }
+                }
+            }
+
+            // `motion <reactive> <parallax>`
+            "motion" => {
+                let numbers: Vec<f32> = value.split(' ').filter_map(|n| n.parse().ok()).collect();
+                if let [reactive, parallax] = numbers[..] {
+                    session.motion = Some(Motion { reactive, parallax });
+                }
+            }
 
             // `own <monitor> <fit|-> <fps> <brightness|-> <saturation> <blur>`
             "own" => {
@@ -255,6 +319,58 @@ fn written_form(session: &Session) -> String {
     if let Some(hotkeys) = session.hotkeys {
         out.push_str(&format!("hotkeys {}\n", if hotkeys { "on" } else { "off" }));
     }
+    if let Some(secs) = session.hibernate_secs {
+        out.push_str(&format!("hibernate {secs}\n"));
+    }
+    if let Some(motion) = session.motion {
+        out.push_str(&format!(
+            "motion {:.3} {:.3}\n",
+            motion.reactive, motion.parallax
+        ));
+    }
+    if let Some(mb) = session.memory_mb {
+        out.push_str(&format!("memory {mb}\n"));
+    }
+    if let Some(secs) = session.idle_secs {
+        out.push_str(&format!("idle {secs}\n"));
+    }
+    if let Some(fps) = session.busy_fps {
+        out.push_str(&format!("busy {fps}\n"));
+    }
+    if let Some(on) = session.reduce_motion {
+        out.push_str(&format!("reducemotion {}\n", if on { "on" } else { "off" }));
+    }
+    if let Some(drift) = session.drift {
+        out.push_str(&format!("drift {drift:.3}\n"));
+    }
+    if let Some(on) = session.accent {
+        out.push_str(&format!("accent {}\n", if on { "on" } else { "off" }));
+    }
+    if !session.apps.is_empty() {
+        out.push_str(&format!("apps {}\n", session.apps.join("|")));
+    }
+    for scene in &session.scenes {
+        out.push_str(&format!(
+            "scene {}\n",
+            crate::compositor::write_scene(scene)
+        ));
+    }
+    for (path, values) in &session.shader_params {
+        // Sorted, so a file that is written every time a setting changes
+        // does not shuffle its own lines and look different each time.
+        let mut fields: Vec<String> = values
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        fields.sort();
+        out.push_str(&format!("sparam {}|{}\n", path.display(), fields.join("|")));
+    }
+    if !session.rules.is_empty() {
+        out.push_str(&format!(
+            "rules {}\n",
+            crate::compositor::write_rules(&session.rules)
+        ));
+    }
 
     for (name, own) in &session.overrides {
         let visual = own.visual.unwrap_or_default();
@@ -338,6 +454,101 @@ mod tests {
         assert_eq!(session.span, Some(true));
         assert_eq!(session.hotkeys, Some(false));
         assert!(!session.sound.unwrap().duck);
+    }
+
+    /// The settings this session added. Written out and read back rather
+    /// than parsed from a literal: the pair is where a field silently stops
+    /// being remembered, and only a round trip catches that.
+    #[test]
+    fn the_settings_added_for_hibernation_and_motion_round_trip() {
+        let before = Session {
+            hibernate_secs: Some(45),
+            motion: Some(Motion {
+                reactive: 0.6,
+                parallax: 0.25,
+            }),
+            memory_mb: Some(350),
+            apps: vec!["photoshop.exe".to_string(), "blender".to_string()],
+            rules: crate::compositor::parse_rules(r"t420|C:a bday.mp4;d1|C:dark.mp4"),
+            ..Session::default()
+        };
+
+        let after = parse(&written_form(&before));
+
+        assert_eq!(after.hibernate_secs, Some(45));
+        let motion = after.motion.unwrap();
+        assert!((motion.reactive - 0.6).abs() < 0.001);
+        assert!((motion.parallax - 0.25).abs() < 0.001);
+        assert_eq!(after.memory_mb, Some(350));
+        assert_eq!(after.apps, before.apps);
+        // Paths with spaces in them are the case the `|` separator exists
+        // for, and a rule is a path list.
+        assert_eq!(after.rules, before.rules);
+    }
+
+    /// The settings this session added, round-tripped rather than parsed
+    /// from a literal — the pair of write and read is where a field silently
+    /// stops being remembered.
+    #[test]
+    fn the_settings_added_for_idling_drifting_and_scenes_round_trip() {
+        let mut shader_params = HashMap::new();
+        shader_params.insert(
+            PathBuf::from(r"C:\shaders\bars one.hlsl"),
+            HashMap::from([("speed".to_string(), 1.5), ("glow".to_string(), 0.25)]),
+        );
+
+        let before = Session {
+            idle_secs: Some(600),
+            busy_fps: Some(12),
+            reduce_motion: Some(false),
+            drift: Some(0.4),
+            accent: Some(true),
+            scenes: vec![crate::compositor::parse_scene(
+                r"Gece;\\.\DISPLAY1=C:\a b.mp4|C:\c.mp4;\\.\DISPLAY2=",
+            )
+            .unwrap()],
+            shader_params,
+            ..Session::default()
+        };
+
+        let after = parse(&written_form(&before));
+
+        assert_eq!(after.idle_secs, Some(600));
+        assert_eq!(after.busy_fps, Some(12));
+        assert_eq!(after.reduce_motion, Some(false));
+        assert!((after.drift.unwrap() - 0.4).abs() < 0.001);
+        assert_eq!(after.accent, Some(true));
+        assert_eq!(after.scenes, before.scenes);
+        assert_eq!(after.shader_params, before.shader_params);
+    }
+
+    /// A session file from before any of this existed has none of those
+    /// lines. Every one of them must land on its default rather than on a
+    /// zero — a missing `hibernate` line meaning "never hibernate" would
+    /// silently switch the feature off for everyone upgrading.
+    #[test]
+    fn a_file_without_the_new_lines_leaves_them_unset() {
+        let session = parse(
+            "fps 30
+fit cover
+",
+        );
+        assert_eq!(session.hibernate_secs, None);
+        assert!(session.motion.is_none());
+        assert_eq!(session.memory_mb, None);
+        assert!(session.apps.is_empty());
+        assert!(session.rules.is_empty());
+        // The same rule for everything added since: absent must mean "use
+        // the default", never "the feature is off". A missing `idle` line
+        // reading as zero would silently switch idling off for everybody
+        // upgrading, which is the bug this whole test exists for.
+        assert_eq!(session.idle_secs, None);
+        assert_eq!(session.busy_fps, None);
+        assert_eq!(session.reduce_motion, None);
+        assert_eq!(session.drift, None);
+        assert_eq!(session.accent, None);
+        assert!(session.scenes.is_empty());
+        assert!(session.shader_params.is_empty());
     }
 
     /// A file written before ducking existed has two fields where there are
