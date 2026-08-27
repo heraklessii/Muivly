@@ -34,6 +34,8 @@ export type Settings = {
   fit: Fit
   /** 0 means "advance when the clip ends" rather than on a clock. */
   intervalSecs: number
+  /** Play a list in a drawn order rather than the order it was written in. */
+  shuffle: boolean
   /** 1 leaves the picture alone; below dims, above brightens. */
   brightness: number
   /** 1 leaves the picture alone; 0 is greyscale. */
@@ -102,6 +104,7 @@ export const emptyStore: Store = {
     fps: 30,
     fit: 'cover',
     intervalSecs: 0,
+    shuffle: false,
     brightness: 1,
     saturation: 1,
     blur: 0,
@@ -197,10 +200,17 @@ export function resolve(store: Store, assignment: Assignment): string[] {
   const playlist = store.playlists.find((p) => p.id === assignment.id)
   if (!playlist) return []
 
+  // Indexed once rather than searched per entry. A `find` inside the map is
+  // the whole library scanned for every item of the playlist — fine at ten
+  // wallpapers, and a hundred playlist entries against a library of five
+  // hundred is fifty thousand comparisons on every assignment and on every
+  // reconnect to the engine.
+  const byId = new Map(store.items.map((item) => [item.id, item]))
+
   return playlist.itemIds
-    .map((id) => store.items.find((i) => i.id === id))
-    .filter((i): i is Item => i !== undefined)
-    .map((i) => i.path)
+    .map((id) => byId.get(id))
+    .filter((item): item is Item => item !== undefined)
+    .map((item) => item.path)
 }
 
 /** A human label for what a monitor is set to. */

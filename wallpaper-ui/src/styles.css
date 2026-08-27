@@ -1611,6 +1611,35 @@ input[type='range'] {
  * Keşfet — kartlar `.wall` ile ortak; buraya yalnız sonsuz kaydırma kalıyor
  * ------------------------------------------------------------------------- */
 
+/* Ayarların grup şeridi ve arama kutusu. Kartların üstünde sabit durur:
+   yirmi üç kartın içinde kaydırırken hangi grupta olduğunu görmek gerekiyor,
+   ve arama kutusuna dönmek için başa kadar çıkmak gerekmemeli. */
+.settings-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding: var(--space-2) 0;
+  background: var(--bg);
+}
+
+/* Kartlar eskiden doğrudan kardeşti; sarmalayıcı yalnız "hiçbiri eşleşmedi"
+   sorusunu `:empty` ile cevaplamak için var, o yüzden yerleşime karışmıyor. */
+.settings-cards {
+  display: contents;
+}
+
+.settings-none {
+  display: none;
+}
+
+.settings-cards:empty + .settings-none {
+  display: block;
+}
+
 .section-chips {
   margin-bottom: var(--space-4);
 }

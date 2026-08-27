@@ -93,6 +93,8 @@ export type EngineStatus = {
   frozen: boolean
   fit: Fit
   interval_secs: number
+  /** Whether a playlist plays in a drawn order rather than as written. */
+  shuffle: boolean
   brightness: number
   saturation: number
   blur: number
@@ -193,6 +195,7 @@ export const engine = {
   setFps: (fps: number) => invoke<void>('set_fps', { fps }),
   setFit: (fit: Fit) => invoke<void>('set_fit', { fit }),
   setInterval: (seconds: number) => invoke<void>('set_interval', { seconds }),
+  setShuffle: (shuffle: boolean) => invoke<void>('set_shuffle', { shuffle }),
   setVisual: (brightness: number, saturation: number, blur: number) =>
     invoke<void>('set_visual', { brightness, saturation, blur }),
   setSound: (enabled: boolean, volume: number, duck: boolean) =>

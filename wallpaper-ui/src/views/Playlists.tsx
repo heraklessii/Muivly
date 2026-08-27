@@ -182,6 +182,7 @@ export default function Playlists({ store, monitors, onChange, onAssignPlaylist 
                         <button
                           className="icon"
                           title="Yukarı"
+                          aria-label={`${item.title} — bir yukarı taşı`}
                           disabled={index === 0}
                           onClick={() => move(selected, index, -1)}
                         >
@@ -190,6 +191,7 @@ export default function Playlists({ store, monitors, onChange, onAssignPlaylist 
                         <button
                           className="icon"
                           title="Aşağı"
+                          aria-label={`${item.title} — bir aşağı taşı`}
                           disabled={index === selected.itemIds.length - 1}
                           onClick={() => move(selected, index, 1)}
                         >
@@ -198,6 +200,7 @@ export default function Playlists({ store, monitors, onChange, onAssignPlaylist 
                         <button
                           className="icon danger"
                           title="Listeden çıkar"
+                          aria-label={`${item.title} — listeden çıkar`}
                           onClick={() =>
                             update({
                               ...selected,

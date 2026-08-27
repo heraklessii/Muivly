@@ -87,10 +87,10 @@ export default function Automation({ store, rules, onChange }: Props) {
     <section className="card">
       <h2 className="card-title">Otomasyon</h2>
       <p className="card-sub">
-        Saate veya Windows temasına göre duvar kağıdını kendisi değiştirir.
-        Saat kuralları <em>başlangıç</em> saatidir: 07:00 ve 20:00 koyarsan
-        gündüz–gece olur, arada boşluk kalmaz. Tema kuralı varsa saatten önce
-        gelir.
+        Duvar kağıdı saate ya da Windows'un açık/koyu temasına göre kendisi
+        değişsin. Yazdığın saat, o duvar kağıdının <em>başlama</em> saatidir:
+        07:00 ve 20:00 koyarsan gündüz–gece olur. Tema kuralı varsa saatten
+        önce gelir.
       </p>
 
       {rules.length > 0 && (
@@ -107,6 +107,7 @@ export default function Automation({ store, rules, onChange }: Props) {
               <button
                 className="chip-remove"
                 title="Kuralı kaldır"
+                aria-label="Kuralı kaldır"
                 onClick={() =>
                   onChange(rules.filter((other) => other !== rule))
                 }
@@ -120,8 +121,8 @@ export default function Automation({ store, rules, onChange }: Props) {
 
       {choices.length === 0 ? (
         <p className="card-sub">
-          Önce kitaplığa bir duvar kağıdı ekle — kural bir şeyi göstermek
-          zorunda.
+          Önce kitaplığa bir duvar kağıdı ekle; kuralın gösterecek bir şeyi
+          olmalı.
         </p>
       ) : (
         <>

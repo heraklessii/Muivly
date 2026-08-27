@@ -242,9 +242,11 @@ Design notes and the reasoning behind each choice live in [`docs/`](docs/) —
 - [x] WorkerW injection, one D3D11 device per adapter, per-monitor surfaces
 - [x] Occlusion detection — decoding and rendering stop when nothing is visible
 - [x] Media Foundation decoder — hardware H.264/HEVC/VP9/AV1, zero-copy
-- [x] Settings UI — Tauri v2, closes to the system tray
+- [x] Settings UI — Tauri v2, closes to the system tray; four levels from
+      "barely touch this machine" to "as good as it gets", with every dial
+      still there behind them
 - [x] Per-monitor wallpaper assignment
-- [x] Local library and playlists
+- [x] Local library and playlists, shuffled or in the order you wrote them
 - [x] Frame pacing that holds — high-resolution timer, woken by the video's own
       frame times rather than a grid of ours
 - [x] Decoding on its own thread, so a slow read never lands in a frame

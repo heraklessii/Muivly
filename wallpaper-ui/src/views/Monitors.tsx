@@ -206,8 +206,8 @@ export default function Monitors({ store, monitors, status, onAssign, onRefresh 
         <div>
           <h1 className="view-title">Ekranlar</h1>
           <p className="view-sub">
-            {monitors.length} ekran. Aynı GPU'ya bağlı ekranlar aynı videoyu
-            gösteriyorsa tek bir çözme işlemini paylaşır.
+            {monitors.length} ekran. Aynı videoyu gösteren ekranlar birbirinin
+            işini paylaşır, ikinci ekran neredeyse bedavaya gelir.
           </p>
         </div>
       </header>
@@ -215,10 +215,9 @@ export default function Monitors({ store, monitors, status, onAssign, onRefresh 
       <div className="card">
         <h2 className="card-title">Sahneler</h2>
         <p className="card-sub">
-          Hangi ekranda ne olduğunu bir isimle kaydeder. Geri çağırmak, her
-          ekranı tek tek atamakla aynı iş — tek mesajda. Sahne yalnız duvar
-          kağıtlarını taşır: parlaklık, kare hızı ve gerisi masaüstünün
-          ayarı, sahnenin değil.
+          Hangi ekranda ne olduğunu bir isimle kaydeder, tek tıkla geri
+          çağırırsın. Sahne yalnız duvar kağıtlarını hatırlar; parlaklık ve
+          kare hızı gibi ayarlar sahneye göre değişmez.
         </p>
 
         <div className="row">
@@ -291,10 +290,9 @@ export default function Monitors({ store, monitors, status, onAssign, onRefresh 
         <div className="card">
           <h2 className="card-title">Tek duvar kağıdını ekranlara yay</h2>
           <p className="card-sub">
-            Bir video bütün masaüstüne yayılır ve her ekran kendi dilimini
-            gösterir. Kırpma tek seferde, masaüstünün tamamına göre yapılır —
-            böylece görüntü ekranlar arasında hizalı kalır. Tek çözme işlemi,
-            aynı maliyet.
+            Tek bir video bütün ekranlara yayılır, her ekran kendi parçasını
+            gösterir. Görüntü ekranlar arasında hizalı kalır ve tek video
+            oynadığı için fazladan bir maliyeti olmaz.
           </p>
           <div className="row">
             <label className="toggle">
@@ -325,7 +323,7 @@ export default function Monitors({ store, monitors, status, onAssign, onRefresh 
       {monitors.length > 1 && (
         <div className="card">
           <h2 className="card-title">Yerleşim</h2>
-          <p className="card-sub">Masaüstü düzenin, ölçekli.</p>
+          <p className="card-sub">Ekranlarının dizilişi.</p>
           <div
             className="layout"
             style={{ width: spanWidth * scale, height: spanHeight * scale }}

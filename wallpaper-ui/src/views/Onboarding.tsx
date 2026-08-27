@@ -185,8 +185,7 @@ export default function Onboarding({
             <>
               <h1 className="onboard-title">İlk videonu ekle</h1>
               <p className="onboard-lead">
-                Donanım çözücüsü olan her format çalışır — genelde mp4
-                (H.264/HEVC) ve webm (VP9/AV1). Birden fazla dosya
+                mp4 ve webm dosyaları çalışır. Birden fazlasını birden
                 seçebilirsin.
               </p>
 

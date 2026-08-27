@@ -58,6 +58,22 @@ project_overview.md bölümüne referans.
 
 ## Sırada (henüz başlanmadı)
 
+- [ ] **Karışık oynatmayı ve bu oturumun düzeltmelerini makinede dene.**
+      Hepsi derlendi, `cargo clippy -D warnings` temiz, 164 test geçiyor;
+      hiçbiri makinede çalıştırılmadı:
+      - [ ] Karışık oynatma: üç dört klipli bir listede sıra gerçekten
+            değişiyor mu, aynı klip arka arkaya geliyor mu, ayarı açıp
+            kapatınca ekrandaki klip yerinde kalıyor mu
+      - [ ] Ölen çözücü: dosyayı oynarken silince/çıkarınca UI'da mesaj
+            görünüyor mu, ekran o monitörde masaüstüne dönüyor mu
+      - [ ] Monitör başına fps sınırı: ikinci ekran 10 fps'te takılı kare
+            göstermiyor mu
+      - [ ] Ayarlar grupları: her ayar hâlâ ulaşılabilir mi, arama kutusu
+            gerçek pencerede sticky duruyor mu
+      - [ ] Seviyeler: "Tam" güçsüz bir makinede gerçekten 60 fps'e
+            çıkıyor mu ve orada ne kadar yakıyor; "En hafif" gözle
+            takılıyor mu
+
 - [ ] `MF_SOURCE_READER_DISABLE_CAMERA_PLUGINS` sonrası P010/10-bit HEVC
       yolunu gerçek dosyayla doğrula — processor'lu yeniden açma yalnız
       teoride sınandı
@@ -86,6 +102,44 @@ project_overview.md bölümüne referans.
 (şu an yok)
 
 ## Biten
+
+- [x] **Seviye seçici** (`wallpaper-ui/src/levels.ts`): kare hızı, bellek
+      bütçesi, hibernasyon, boşta durma, meşgul kare hızı ve iki pil ayarı
+      artık tek bir dörtlü seçim — En hafif / Hafif / Dengeli / Tam.
+      Kadranlar "Tek tek ayarla"nın arkasında duruyor, arama yine buluyor.
+      Seviye hatırlanmıyor, değerlerden çıkarılıyor; hiçbirine uymayan bir
+      set "Özel" olarak gösteriliyor. `Dengeli` bilerek motorun kendi
+      varsayılanları — temiz kurulum "Özel" görünmesin diye.
+- [x] Arayüz metinleri sadeleştirildi: çözücü/kare tamponu/DPB/WebView gibi
+      iç terimler kullanıcıya dönük yazılardan çıkarıldı (Ayarlar, Ekranlar,
+      Otomasyon, Kitaplık, Onboarding).
+- [x] Ctrl+1..5 ile görünüm değiştirme, kenar çubuğunda ipucu olarak da
+      yazıyor.
+- [x] Erişilebilirlik: `aria-current` gezinmede, ikon düğmelerine
+      `aria-label`, hata satırlarına `role="alert"`.
+- [x] `resolve()` kitaplığı liste girdisi başına baştan tarıyordu — bir kez
+      indeksleniyor.
+- [x] Ayarlar sayfası gruplandı
+: yirmi üç kart tek kolondaydı, artık beş
+      grup (Oynatma / Tasarruf / Görünüm / Sistem / Durum) ve bir arama
+      kutusu var. Arama gruplardan bağımsız, Türkçe harf katlaması yapıyor
+      (`gorunum` → Görünüm, `KISAYOL` → Kısayollar). "Hiçbiri eşleşmedi"
+      ikinci bir kart listesi tutmadan CSS `:empty` ile cevaplanıyor.
+- [x] Karışık oynatma
+ (`compositor/order.rs` — torba yöntemi, listeyi bir kez
+      dolaşıp sırayı yeniden çekiyor; iki geçiş arasında aynı klip
+      tekrarlanmıyor). Bağımlılık yok, kendi xorshift'i var.
+- [x] `same_app` `.Exe` gibi karışık yazımı tanımıyordu — kullanıcının yazdığı
+      uygulama kuralı sessizce hiç çalışmıyordu
+- [x] Ölen çözücü (okuma thread'i hata alıp çıkınca) fark edilmiyordu: ekran
+      tek karede kalıyor, döngü hiç dinlenmiyor, kullanıcıya bir şey
+      söylenmiyordu
+- [x] Monitör başına fps sınırı, taze kareyi düşürüp bir daha çizmiyordu
+- [x] GIF kare dikdörtgeni satır sonunu aşınca bir alt satıra taşıyordu
+- [x] Çizim döngüsünden kare başına `PathBuf` kopyaları kaldırıldı; oynatma
+      listesi yokken `loop_counts` haritası hiç kurulmuyor
+- [x] UI ekran listesini yalnız sayı değişince tazeliyordu — ekran takas
+      edilince eski liste kalıyordu
 
 - [x] Hafiflet'te referans kare sayısı ve GOP (`ICodecAPI`)
 - [x] Kitaplıkta "ekranından büyük" uyarısı ve Hafiflet önerisi

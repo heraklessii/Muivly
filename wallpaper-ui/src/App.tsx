@@ -91,12 +91,22 @@ export default function App() {
     // a second request can legitimately arrive a moment too early and fail
     // on its own.
     //
-    // Refetched when the counts disagree as well as when there is nothing:
+    // Refetched when the names disagree as well as when there is nothing:
     // status names every screen the engine knows about, so a display being
     // plugged in or unplugged shows up there first. Without this the screen
     // list stayed as it was at launch and "apply to this monitor" pointed at
     // a display that had been unplugged an hour ago.
-    if (monitorsRef.current.length !== next.monitors.length) {
+    //
+    // The names, not the count. Swapping one monitor for another leaves the
+    // count where it was, and comparing only that kept a list of screens
+    // that no longer exist — with the geometry the panel draws taken from
+    // the display that had been unplugged.
+    const known = new Set(monitorsRef.current.map((monitor) => monitor.name))
+    const changed =
+      known.size !== next.monitors.length ||
+      next.monitors.some((monitor) => !known.has(monitor.name))
+
+    if (changed) {
       try {
         const list = await engine.monitors()
         monitorsRef.current = list
@@ -135,6 +145,23 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [refresh])
+
+  // Ctrl+1 to Ctrl+5 for the five views, the way every desktop application
+  // with a sidebar works. Only with a modifier and only when the keystroke
+  // is not going into a field: a bare "3" belongs to whatever the user is
+  // typing in, and stealing it would make the rename box unusable.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return
+      const index = Number(event.key) - 1
+      if (!Number.isInteger(index) || index < 0 || index >= NAV.length) return
+      event.preventDefault()
+      setView(NAV[index].id)
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // Persisting is debounced: renaming a wallpaper types one character at a
   // time and each keystroke would otherwise be a disk write.
@@ -229,16 +256,18 @@ export default function App() {
 
   return (
     <div className="shell">
-      <nav className="sidebar">
+      <nav className="sidebar" aria-label="Ana menü">
         <div className="wordmark">
           Mui<span>vly</span>
         </div>
 
         <div className="nav">
-          {NAV.map((entry) => (
+          {NAV.map((entry, index) => (
             <button
               key={entry.id}
               className="nav-item"
+              aria-current={view === entry.id ? 'page' : undefined}
+              title={`${entry.label} (Ctrl+${index + 1})`}
               data-active={view === entry.id}
               onClick={() => setView(entry.id)}
             >
@@ -260,7 +289,10 @@ export default function App() {
           {/* What the engine is costing, where it is always in sight — the
               whole point of Muivly is that these numbers stay small. */}
           {status && (
-            <div className="sidebar-meter">
+            <div
+              className="sidebar-meter"
+              title={`Saniyede ${status.real_fps.toFixed(0)} kare · işlemcinin bir çekirdeğinin %${status.cpu.toFixed(0)} kadarı · ${status.ram_mb.toFixed(0)} MB bellek`}
+            >
               <span>
                 {status.real_fps.toFixed(0)}
                 <em>fps</em>
@@ -313,12 +345,20 @@ export default function App() {
           </div>
         )}
 
-        {error && <p className="error-text">{error}</p>}
+        {error && (
+          <p className="error-text" role="alert">
+            {error}
+          </p>
+        )}
 
         {/* The engine reports its own failures — a codec with no hardware
             decoder, a file that moved. They belong next to whatever the UI
             itself has to say. */}
-        {status?.error && <p className="error-text">{status.error}</p>}
+        {status?.error && (
+          <p className="error-text" role="alert">
+            {status.error}
+          </p>
+        )}
 
         {view === 'library' && (
           <Library

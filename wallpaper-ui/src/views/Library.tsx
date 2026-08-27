@@ -494,9 +494,9 @@ export default function Library({
         <div className="card empty">
           <h2 className="card-title">Kitaplık boş</h2>
           <p>
-            Video ekleyerek başla. Donanım çözücüsü olan her format çalışır —
-            genelde mp4 (H.264/HEVC) ve webm (VP9/AV1). Duran görseller de
-            olur; onlar ekrana geldikten sonra hiçbir maliyet çıkarmaz.
+            Video ekleyerek başla — mp4 ve webm dosyaları çalışır. Fotoğraf
+            da olur; fotoğraf duvar kağıdı ekrana geldikten sonra bilgisayarını
+            hiç yormaz.
           </p>
           <div className="row center-row">
             <button className="primary" onClick={add}>
@@ -846,7 +846,7 @@ export default function Library({
 
             {shaderOnScreen && (
               <>
-                <div className="section-label">Bu shader'ın ayarları</div>
+                <div className="section-label">Bu duvar kağıdının kendi ayarları</div>
                 <p className="muted">
                   Dosyanın kendi başındaki <code>// param</code> satırlarından
                   geliyor. Değiştirmek anında uygulanır — yeniden derleme yok,
