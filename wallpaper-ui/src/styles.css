@@ -555,6 +555,24 @@ input[type='range'] {
   color: var(--accent);
 }
 
+/* Dinlenme çubuğu — motorun hiç çizmediği sürenin payı. Kaydırıcıların
+   yerini tuttuğu için onlarla aynı yüksekliği ve genişliği alır. */
+.rest-bar {
+  flex: 1;
+  max-width: 420px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.rest-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
 /* Anahtar — "Açık" onay kutusu */
 .toggle {
   display: inline-flex;
@@ -639,6 +657,16 @@ input[type='range'] {
 
 .thumb-missing {
   color: var(--error);
+}
+
+/* Shader: motor çizene kadar bir görüntüsü yok, o yüzden kendi işareti var.
+   Eksik dosya işaretiyle karışmaması gerekiyor — bu bir hata değil. */
+.thumb-shader {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  font-size: var(--font-xl);
+  background: var(--bg-sunken);
 }
 
 /* ---------------------------------------------------------------------------
@@ -936,6 +964,19 @@ input[type='range'] {
   color: var(--error);
 }
 
+/* "Ekranından büyük" — bir hata değil, kaçırılmış bir kazanç. */
+.wp-flag[data-tone='warning'] {
+  background: rgb(0 0 0 / 55%);
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+/* Alt köşeye taşınan rozet: üstteki "ekranda" rozetiyle çakışmasın. */
+.wp-flag[data-corner='bottom'] {
+  top: auto;
+  bottom: var(--space-2);
+}
+
 /* Sayfa gelirken ızgaranın şekli belli olsun diye boş kartlar. */
 .wp-skeleton {
   pointer-events: none;
@@ -1080,6 +1121,37 @@ input[type='range'] {
   border-color: var(--accent-line);
   color: var(--accent);
   font-weight: 600;
+}
+
+/* Silinebilir chip bir düğme değil, içinde düğme olan bir satır — otomasyon
+   kuralları böyle listeleniyor. */
+.chip.removable {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-right: var(--space-2);
+  border: 1px solid var(--border);
+}
+
+.chip-remove {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--font-lg);
+  line-height: 1;
+}
+
+.chip-remove:hover {
+  color: var(--error);
+}
+
+/* Satırın kalanını alan serbest metin alanı. */
+.row > .grow {
+  flex: 1;
+  min-width: 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1515,6 +1587,17 @@ input[type='range'] {
   margin: var(--space-2) 0 0;
 }
 
+/* Bir hata değil, kaçırılmış bir kazanç: uyarı tonunda ama kırmızı değil. */
+.notice {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  font-size: var(--font-sm);
+  color: var(--text);
+}
+
 .drawer-foot {
   display: flex;
   align-items: center;
@@ -1644,4 +1727,11 @@ input[type='range'] {
 
 .own[open] > summary {
   margin-bottom: var(--space-3);
+}
+
+/* Sahne düğmesi ve yanındaki sil — tek bir öğe gibi dursunlar. */
+.scene {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
 }

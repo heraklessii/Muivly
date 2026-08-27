@@ -30,7 +30,7 @@ const ERROR_PIPE_BUSY: i32 = 231;
 const BUSY_RETRIES: u32 = 10;
 const BUSY_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// What one monitor has chosen not to share with the others.
 ///
@@ -55,6 +55,57 @@ pub struct MonitorState {
     pub overrides: Overrides,
 }
 
+/// One automation rule as the frontend sees it.
+///
+/// The engine's wire form is terse (`t420|C:\\x.mp4`); this is the same
+/// thing with the parts named, because a settings panel needs the pieces
+/// separately and string surgery in TypeScript is where the bugs live.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Rule {
+    /// `time` or `theme`.
+    pub kind: String,
+    /// Minutes since midnight for `time`; 1 for the dark theme, 0 for light.
+    pub value: u32,
+    pub items: Vec<String>,
+}
+
+/// One saved arrangement of wallpapers across the screens.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Scene {
+    pub name: String,
+    /// Device name, and what that screen was showing.
+    pub monitors: Vec<(String, Vec<String>)>,
+}
+
+/// One setting a shader file declares for itself, and where it is set.
+#[derive(Serialize, Clone)]
+pub struct ShaderParam {
+    pub name: String,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+    pub value: f32,
+    pub label: String,
+}
+
+/// A shader on screen, with the settings it asked for.
+#[derive(Serialize, Clone)]
+pub struct ShaderFile {
+    pub path: String,
+    pub params: Vec<ShaderParam>,
+}
+
+/// A rewrite in progress, or the one that just finished.
+#[derive(Serialize)]
+pub struct Optimize {
+    pub source: String,
+    /// 0-100.
+    pub percent: u32,
+    /// Where the smaller copy landed, once it has.
+    pub output: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct Status {
     pub fps: u32,
@@ -76,6 +127,45 @@ pub struct Status {
     pub fade_ms: u64,
     pub span: bool,
     pub hotkeys: bool,
+    /// How long out of sight before the engine hands its decoders back;
+    /// 0 keeps them open.
+    pub hibernate_secs: u64,
+    /// Whether they are handed back right now.
+    pub hibernating: bool,
+    /// How far the wallpaper answers to sound, and to the cursor. 0-1 each.
+    pub reactive: f32,
+    pub parallax: f32,
+    /// A memory budget in megabytes; 0 is none.
+    pub memory_mb: u32,
+    /// Applications that freeze the wallpaper while they are in front.
+    pub apps: Vec<String>,
+    /// Wallpapers that change themselves, by clock or by theme.
+    pub rules: Vec<Rule>,
+    /// Named arrangements of wallpapers across the screens.
+    pub scenes: Vec<Scene>,
+    /// The settings each shader on screen declares for itself.
+    pub shaders: Vec<ShaderFile>,
+    /// How long the machine may sit untouched before the wallpaper stands
+    /// still, and whether it is standing still now.
+    pub idle_secs: u64,
+    pub away: bool,
+    /// The frame rate while the machine is busy with something else, whether
+    /// it is, and how busy the last sample found it.
+    pub busy_fps: u32,
+    pub busy: bool,
+    pub load: f32,
+    /// Whether Windows' reduce-motion setting is honoured.
+    pub reduce_motion: bool,
+    /// How far a photograph drifts on its own, 0-1.
+    pub drift: f32,
+    /// Whether the Windows accent colour follows the wallpaper.
+    pub accent: bool,
+    /// How long the engine has been up, and how much of that it spent
+    /// drawing nothing at all.
+    pub uptime_secs: u64,
+    pub resting_secs: u64,
+    /// A clip being rewritten smaller, if one is.
+    pub optimize: Option<Optimize>,
     /// The frame rate cap while unplugged; 0 means the same as plugged in.
     pub battery_fps: u32,
     pub pause_on_saver: bool,
@@ -112,6 +202,26 @@ impl Default for Status {
             fade_ms: 400,
             span: false,
             hotkeys: true,
+            hibernate_secs: 20,
+            hibernating: false,
+            reactive: 0.0,
+            parallax: 0.0,
+            memory_mb: 0,
+            apps: Vec::new(),
+            rules: Vec::new(),
+            scenes: Vec::new(),
+            shaders: Vec::new(),
+            idle_secs: 300,
+            away: false,
+            busy_fps: 10,
+            busy: false,
+            load: 0.0,
+            reduce_motion: true,
+            drift: 0.0,
+            accent: false,
+            uptime_secs: 0,
+            resting_secs: 0,
+            optimize: None,
             battery_fps: 24,
             pause_on_saver: true,
             on_battery: false,
@@ -221,6 +331,11 @@ pub fn status() -> Result<Status, String> {
                     Some(("fade", v)) => status.fade_ms = v.parse().unwrap_or(400),
                     Some(("span", v)) => status.span = v == "true",
                     Some(("hotkeys", v)) => status.hotkeys = v == "true",
+                    Some(("hibernate", v)) => status.hibernate_secs = v.parse().unwrap_or(20),
+                    Some(("hibernating", v)) => status.hibernating = v == "true",
+                    Some(("reactive", v)) => status.reactive = v.parse().unwrap_or(0.0),
+                    Some(("parallax", v)) => status.parallax = v.parse().unwrap_or(0.0),
+                    Some(("memory", v)) => status.memory_mb = v.parse().unwrap_or(0),
                     Some(("batfps", v)) => status.battery_fps = v.parse().unwrap_or(24),
                     Some(("batfreeze", v)) => status.pause_on_saver = v == "true",
                     Some(("battery", v)) => status.on_battery = v == "true",
@@ -229,6 +344,16 @@ pub fn status() -> Result<Status, String> {
                     Some(("cpu", v)) => status.cpu = v.parse().unwrap_or(0.0),
                     Some(("ram", v)) => status.ram_mb = v.parse().unwrap_or(0),
                     Some(("realfps", v)) => status.real_fps = v.parse().unwrap_or(0.0),
+                    Some(("idle", v)) => status.idle_secs = v.parse().unwrap_or(300),
+                    Some(("away", v)) => status.away = v == "true",
+                    Some(("busyfps", v)) => status.busy_fps = v.parse().unwrap_or(10),
+                    Some(("busy", v)) => status.busy = v == "true",
+                    Some(("load", v)) => status.load = v.parse().unwrap_or(0.0),
+                    Some(("reducemotion", v)) => status.reduce_motion = v == "true",
+                    Some(("drift", v)) => status.drift = v.parse().unwrap_or(0.0),
+                    Some(("accent", v)) => status.accent = v == "true",
+                    Some(("uptime", v)) => status.uptime_secs = v.parse().unwrap_or(0),
+                    Some(("resting", v)) => status.resting_secs = v.parse().unwrap_or(0),
                     _ => {}
                 }
             }
@@ -239,6 +364,43 @@ pub fn status() -> Result<Status, String> {
         // it and the key=value header above cannot carry one.
         if let Some(message) = line.strip_prefix("error ") {
             status.error = Some(message.to_string());
+            continue;
+        }
+
+        // `apps <name>|<name>` and `rules <rule>;<rule>`, absent when empty.
+        if let Some(list) = line.strip_prefix("apps ") {
+            status.apps = list
+                .split('|')
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect();
+            continue;
+        }
+
+        if let Some(text) = line.strip_prefix("rules ") {
+            status.rules = parse_rules(text);
+            continue;
+        }
+
+        // `scene <name>;<monitor>=<path>|<path>;...`, one line each.
+        if let Some(text) = line.strip_prefix("scene ") {
+            if let Some(scene) = parse_scene(text) {
+                status.scenes.push(scene);
+            }
+            continue;
+        }
+
+        // `shader <path>|<name>,<min>,<max>,<default>,<value>,<label>|...`
+        if let Some(text) = line.strip_prefix("shader ") {
+            if let Some(shader) = parse_shader(text) {
+                status.shaders.push(shader);
+            }
+            continue;
+        }
+
+        // `optimize <state> <percent> <source>|<detail>`
+        if let Some(rest) = line.strip_prefix("optimize ") {
+            status.optimize = parse_optimize(rest);
             continue;
         }
 
@@ -413,6 +575,218 @@ pub fn set_hotkeys(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
+pub fn set_hibernate(seconds: u64) -> Result<(), String> {
+    request(&format!("hibernate {seconds}")).map(|_| ())
+}
+
+#[tauri::command(async)]
+pub fn set_motion(reactive: f32, parallax: f32) -> Result<(), String> {
+    request(&format!("motion {reactive} {parallax}")).map(|_| ())
+}
+
+#[tauri::command(async)]
+pub fn set_memory(megabytes: u32) -> Result<(), String> {
+    request(&format!("memory {megabytes}")).map(|_| ())
+}
+
+#[tauri::command(async)]
+pub fn set_apps(names: Vec<String>) -> Result<(), String> {
+    request(&format!("apps {}", names.join("|"))).map(|_| ())
+}
+
+/// The whole rule list at once. Sending one rule at a time would need a way
+/// to say which one, and the list is short enough that the whole panel is
+/// the simpler message.
+#[tauri::command(async)]
+pub fn set_rules(rules: Vec<Rule>) -> Result<(), String> {
+    let text = rules
+        .iter()
+        .filter(|rule| !rule.items.is_empty())
+        .map(|rule| {
+            let head = if rule.kind == "theme" {
+                format!("d{}", if rule.value == 1 { 1 } else { 0 })
+            } else {
+                format!("t{}", rule.value.min(24 * 60 - 1))
+            };
+            format!("{head}|{}", rule.items.join("|"))
+        })
+        .collect::<Vec<_>>()
+        .join(";");
+
+    request(&format!("rules {text}")).map(|_| ())
+}
+
+/// Ask the engine to rewrite a clip at the size of the largest screen.
+#[tauri::command(async)]
+pub fn optimize(path: String) -> Result<(), String> {
+    request(&format!("optimize {path}")).map(|_| ())
+}
+
+/// How long the machine may sit untouched before the wallpaper stands still.
+#[tauri::command(async)]
+pub fn set_idle(seconds: u64) -> Result<(), String> {
+    request(&format!("idle {seconds}")).map(|_| ())
+}
+
+/// The frame rate to fall to while the machine is busy with something else.
+#[tauri::command(async)]
+pub fn set_busy_fps(fps: u32) -> Result<(), String> {
+    request(&format!("busy {fps}")).map(|_| ())
+}
+
+#[tauri::command(async)]
+pub fn set_reduce_motion(enabled: bool) -> Result<(), String> {
+    request(&format!(
+        "reducemotion {}",
+        if enabled { "on" } else { "off" }
+    ))
+    .map(|_| ())
+}
+
+/// How far a photograph drifts on its own.
+#[tauri::command(async)]
+pub fn set_drift(drift: f32) -> Result<(), String> {
+    request(&format!("drift {drift}")).map(|_| ())
+}
+
+/// Whether the Windows accent colour follows the wallpaper.
+#[tauri::command(async)]
+pub fn set_accent(enabled: bool) -> Result<(), String> {
+    request(&format!("accent {}", if enabled { "on" } else { "off" })).map(|_| ())
+}
+
+/// One shader file's own settings, all of them at once.
+#[tauri::command(async)]
+pub fn set_shader_params(path: String, values: Vec<(String, f32)>) -> Result<(), String> {
+    if path.contains(['\n', '\r', '|']) {
+        return Err("a shader path cannot contain a line break or a pipe".to_string());
+    }
+    if values.is_empty() {
+        return Ok(());
+    }
+
+    let fields: Vec<String> = values
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    request(&format!("shader {path}|{}", fields.join("|"))).map(|_| ())
+}
+
+/// Save what is on every screen under a name, recall it, or forget it.
+#[tauri::command(async)]
+pub fn scene(action: String, name: String) -> Result<(), String> {
+    if !matches!(action.as_str(), "save" | "load" | "delete") {
+        return Err("a scene is saved, loaded or deleted".to_string());
+    }
+    if name.is_empty() || name.contains([';', '|', '=', '\n', '\r']) {
+        return Err("a scene name cannot contain ; | = or a line break".to_string());
+    }
+    request(&format!("scene {action} {name}")).map(|_| ())
+}
+
+/// `t420|C:\\a.mp4;d1|C:\\b.mp4` as something a settings panel can edit.
+fn parse_rules(text: &str) -> Vec<Rule> {
+    text.split(';')
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let mut parts = entry.split('|');
+            let head = parts.next()?;
+            let (kind, value) = head.split_at_checked(1)?;
+            let items: Vec<String> = parts
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect();
+
+            Some(Rule {
+                kind: match kind {
+                    "t" => "time".to_string(),
+                    "d" => "theme".to_string(),
+                    _ => return None,
+                },
+                value: value.parse().ok()?,
+                items,
+            })
+        })
+        .collect()
+}
+
+/// `<name>;<monitor>=<path>|<path>;<monitor>=` as something a panel can show.
+///
+/// A monitor with nothing assigned is kept: clearing a screen is part of
+/// what recalling an arrangement does.
+fn parse_scene(text: &str) -> Option<Scene> {
+    let mut parts = text.split(';');
+    let name = parts.next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(Scene {
+        name: name.to_string(),
+        monitors: parts
+            .filter(|entry| !entry.is_empty())
+            .filter_map(|entry| {
+                let (monitor, list) = entry.split_once('=')?;
+                let items = list
+                    .split('|')
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                Some((monitor.to_string(), items))
+            })
+            .collect(),
+    })
+}
+
+/// `<path>|<name>,<min>,<max>,<default>,<value>,<label>|...`
+///
+/// The label is last inside each field because it is the only part that may
+/// contain a comma or a space; everything before it is a number.
+fn parse_shader(text: &str) -> Option<ShaderFile> {
+    let mut parts = text.split('|');
+    let path = parts.next().filter(|p| !p.is_empty())?;
+
+    let params: Vec<ShaderParam> = parts
+        .filter_map(|field| {
+            let fields: Vec<&str> = field.splitn(6, ',').collect();
+            let [name, min, max, default, value, label] = fields[..] else {
+                return None;
+            };
+            Some(ShaderParam {
+                name: name.to_string(),
+                min: min.parse().ok()?,
+                max: max.parse().ok()?,
+                default: default.parse().ok()?,
+                value: value.parse().ok()?,
+                label: label.to_string(),
+            })
+        })
+        .collect();
+
+    (!params.is_empty()).then(|| ShaderFile {
+        path: path.to_string(),
+        params,
+    })
+}
+
+/// `<state> <percent> <source>|<detail>`.
+fn parse_optimize(rest: &str) -> Option<Optimize> {
+    let mut parts = rest.splitn(3, ' ');
+    let state = parts.next()?;
+    let percent = parts.next()?.parse().unwrap_or(0);
+    let (source, detail) = parts.next()?.split_once('|')?;
+
+    Some(Optimize {
+        source: source.to_string(),
+        percent,
+        // The detail field is the output path or the reason, depending on
+        // the state — one slot, because only one of them is ever set.
+        output: (state == "done").then(|| detail.to_string()),
+        error: (state == "failed").then(|| detail.to_string()),
+    })
+}
+
+#[tauri::command(async)]
 pub fn set_frozen(frozen: bool) -> Result<(), String> {
     request(&format!("freeze {}", if frozen { "on" } else { "off" })).map(|_| ())
 }
@@ -505,4 +879,102 @@ pub fn set_everywhere(path: &str) -> Result<(), String> {
         request(&format!("set {} {path}", monitor.name))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clock_rule_keeps_its_minute() {
+        let rules = parse_rules(r"t420|C:\clips\day.mp4");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].kind, "time");
+        assert_eq!(rules[0].value, 420);
+        assert_eq!(rules[0].items, vec![r"C:\clips\day.mp4".to_string()]);
+    }
+
+    #[test]
+    fn a_theme_rule_says_which_theme() {
+        let rules = parse_rules(r"d1|C:\clips\dark.mp4;d0|C:\clips\light.mp4");
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].kind, "theme");
+        assert_eq!(rules[0].value, 1);
+        assert_eq!(rules[1].value, 0);
+    }
+
+    #[test]
+    fn a_playlist_rule_keeps_every_item_in_order() {
+        // Paths are separated by `|`, which is also what separates them from
+        // the trigger — so a list is where an off-by-one here would show.
+        let rules = parse_rules(r"t0|a.mp4|b.mp4|c.mp4");
+        assert_eq!(rules[0].items, vec!["a.mp4", "b.mp4", "c.mp4"]);
+    }
+
+    #[test]
+    fn nonsense_is_skipped_rather_than_fatal() {
+        // A malformed rule must not cost the user the rules around it: this
+        // list is polled and re-rendered, not saved from here.
+        assert!(parse_rules("").is_empty());
+        assert!(parse_rules("wat|x.mp4").is_empty());
+        assert_eq!(parse_rules("wat|x.mp4;t60|good.mp4").len(), 1);
+    }
+
+    #[test]
+    fn a_scene_keeps_every_screen_including_the_empty_ones() {
+        let scene = parse_scene(r"Gece;\\.\DISPLAY1=C:\a b.mp4|C:\c.mp4;\\.\DISPLAY2=").unwrap();
+        assert_eq!(scene.name, "Gece");
+        assert_eq!(scene.monitors.len(), 2);
+        assert_eq!(scene.monitors[0].1.len(), 2);
+        assert!(scene.monitors[1].1.is_empty());
+    }
+
+    #[test]
+    fn a_scene_needs_a_name() {
+        assert!(parse_scene("").is_none());
+        assert!(parse_scene(";DISPLAY1=a.mp4").is_none());
+    }
+
+    /// The label is the only field with spaces or commas in it, which is why
+    /// it is last and why the split has a limit.
+    #[test]
+    fn a_shader_setting_keeps_a_label_with_commas_in_it() {
+        let shader =
+            parse_shader(r"C:\s\bars.hlsl|glow,0,1,0.35,0.5,How far it spreads, roughly").unwrap();
+        assert_eq!(shader.path, r"C:\s\bars.hlsl");
+        assert_eq!(shader.params[0].name, "glow");
+        assert_eq!(shader.params[0].value, 0.5);
+        assert_eq!(shader.params[0].label, "How far it spreads, roughly");
+    }
+
+    #[test]
+    fn a_shader_with_no_settings_is_not_reported_at_all() {
+        assert!(parse_shader(r"C:\s\plain.hlsl").is_none());
+        assert!(parse_shader("").is_none());
+    }
+
+    #[test]
+    fn a_rewrite_in_progress_has_neither_an_output_nor_an_error() {
+        let job = parse_optimize(r"running 42 C:\clips\rain.mp4|").unwrap();
+        assert_eq!(job.percent, 42);
+        assert_eq!(job.source, r"C:\clips\rain.mp4");
+        assert!(job.output.is_none());
+        assert!(job.error.is_none());
+    }
+
+    #[test]
+    fn a_finished_rewrite_carries_where_it_landed() {
+        let job = parse_optimize(r"done 100 C:\clips\rain.mp4|C:\out\rain 1920x1080.mp4").unwrap();
+        assert_eq!(job.output.as_deref(), Some(r"C:\out\rain 1920x1080.mp4"));
+        assert!(job.error.is_none());
+    }
+
+    #[test]
+    fn a_failed_rewrite_carries_the_reason() {
+        // The reason has spaces in it, which is why the detail field is last
+        // and split off by `|` rather than by whitespace.
+        let job = parse_optimize(r"failed 0 C:\clips\rain.mp4|no hardware encoder here").unwrap();
+        assert_eq!(job.error.as_deref(), Some("no hardware encoder here"));
+        assert!(job.output.is_none());
+    }
 }

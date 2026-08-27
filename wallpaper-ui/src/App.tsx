@@ -324,7 +324,10 @@ export default function App() {
           <Library
             store={store}
             monitors={monitors}
+            optimize={status?.optimize ?? null}
+            shaders={status?.shaders ?? []}
             onChange={persist}
+            onRefresh={refresh}
             onAssign={(monitorName, itemId) =>
               assignShown(monitorName, { kind: 'item', id: itemId })
             }

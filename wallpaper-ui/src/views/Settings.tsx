@@ -4,12 +4,15 @@ import {
   contextMenu,
   disk,
   engine,
+  longDuration,
   pack,
   pickPackage,
   startup,
   type EngineStatus,
   type Fit,
+  type Rule,
 } from '../api'
+import Automation from '../components/Automation'
 import type { Store } from '../store'
 
 type Props = {
@@ -71,6 +74,47 @@ const FADES: { value: number; label: string }[] = [
   { value: 800, label: 'Yavaş' },
 ]
 
+/** How long out of sight before the decoders are handed back. */
+const HIBERNATES: { value: number; label: string; help: string }[] = [
+  { value: 0, label: 'Kapalı', help: 'Çözücüler hep açık kalır' },
+  { value: 10, label: '10 sn', help: 'Alt+Tab yapar yapmaz' },
+  { value: 20, label: '20 sn', help: 'Önerilen' },
+  { value: 120, label: '2 dk', help: 'Sadece uzun sürelerde' },
+]
+
+/** The memory budget, as the sizes it actually resolves to. */
+const BUDGETS: { value: number; label: string; help: string }[] = [
+  { value: 0, label: 'Sınırsız', help: 'Donanıma göre seçilen tavan' },
+  { value: 600, label: '600 MB', help: 'Klibin kendi çözünürlüğü' },
+  { value: 350, label: '350 MB', help: 'En çok 1440p' },
+  { value: 200, label: '200 MB', help: 'En çok 1080p' },
+  { value: 120, label: '120 MB', help: 'En çok 720p' },
+]
+
+/** How long the machine may sit untouched before the wallpaper stands still. */
+const IDLES: { value: number; label: string; help: string }[] = [
+  { value: 0, label: 'Kapalı', help: 'Kimse yokken de oynar' },
+  { value: 120, label: '2 dk', help: 'Masadan kalkar kalkmaz' },
+  { value: 300, label: '5 dk', help: 'Önerilen' },
+  { value: 900, label: '15 dk', help: 'Sadece uzun aralarda' },
+]
+
+/** What to fall to while the machine is busy with something else. */
+const BUSY_RATES: { value: number; label: string }[] = [
+  { value: 0, label: 'Düşürme' },
+  { value: 15, label: '15 fps' },
+  { value: 10, label: '10 fps' },
+  { value: 5, label: '5 fps' },
+]
+
+/** How far a photograph drifts on its own. */
+const DRIFTS: { value: number; label: string; help: string }[] = [
+  { value: 0, label: 'Kapalı', help: 'Görsel hiç kıpırdamaz' },
+  { value: 0.35, label: 'Hafif', help: 'Fark edilir etmez' },
+  { value: 0.7, label: 'Belirgin', help: 'Yavaş bir yakınlaşma' },
+  { value: 1, label: 'Tam', help: 'Kadraj gözle görülür gezinir' },
+]
+
 const INTERVALS: { value: number; label: string }[] = [
   { value: 0, label: 'Klip bittiğinde' },
   { value: 300, label: '5 dakika' },
@@ -96,6 +140,15 @@ export default function Settings({ store, status, onChange, onRefresh }: Props) 
   const [autostart, setAutostart] = useState(false)
   const [startupError, setStartupError] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
+  // Same drag-versus-poll reason as the sliders above.
+  const [motion, setMotion] = useState({
+    reactive: store.settings.reactive,
+    parallax: store.settings.parallax,
+  })
+  // The application list is edited as one line of text and only sent when
+  // the box loses focus: sending on every keystroke would freeze the
+  // wallpaper for "p", "ph", "pho"...
+  const [appsDraft, setAppsDraft] = useState<string | null>(null)
   // What the last import or export did, shown until the next one.
   const [packNote, setPackNote] = useState<string | null>(null)
 
@@ -147,6 +200,26 @@ export default function Settings({ store, status, onChange, onRefresh }: Props) 
       () => engine.setVisual(visual.brightness, visual.saturation, visual.blur),
       visual,
     )
+  }
+
+  function pushMotion() {
+    if (status && status.reactive === motion.reactive && status.parallax === motion.parallax) {
+      return
+    }
+    void apply(() => engine.setMotion(motion.reactive, motion.parallax), motion)
+  }
+
+  const apps = status?.apps ?? store.settings.apps
+
+  function pushApps() {
+    if (appsDraft === null) return
+    const names = appsDraft
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean)
+    setAppsDraft(null)
+    if (names.join('|') === apps.join('|')) return
+    void apply(() => engine.setApps(names), { apps: names })
   }
 
   const duck = status?.duck ?? store.settings.duck
@@ -242,6 +315,78 @@ export default function Settings({ store, status, onChange, onRefresh }: Props) 
           Dondurmak duvar kağıdını kaldırmaz — son kare ekranda kalır, çözme
           ve çizme durur.
         </p>
+      </section>
+
+      <section className="card">
+        <h2 className="card-title">Masadan kalkınca</h2>
+        <p className="card-sub">
+          Masaüstü kapalıyken çizim zaten duruyor. Kapalı olmadığı halde
+          kimsenin bakmadığı durumu hiçbir şey yakalamıyordu: bilgisayarın
+          başında kimse yokken duvar kağıdı tam hızda çalışmaya devam
+          ediyordu. Klavye ve fareye bu süre boyunca dokunulmazsa son kare
+          ekranda kalır, ilk tuşta geri gelir.
+          {status?.away && ' Şu an duruyor.'}
+        </p>
+        <div className="options">
+          {IDLES.map((option) => (
+            <button
+              key={option.value}
+              className="option"
+              data-active={(status?.idle_secs ?? store.settings.idleSecs) === option.value}
+              onClick={() =>
+                void apply(() => engine.setIdle(option.value), { idleSecs: option.value })
+              }
+            >
+              <span className="option-label">{option.label}</span>
+              <span className="option-help">{option.help}</span>
+            </button>
+          ))}
+        </div>
+        <p className="card-sub">
+          Windows'un kendi giriş sayacını okur — tuş kaydeden bir şey
+          kurulmaz, hiçbir tuş görülmez.
+        </p>
+      </section>
+
+      <section className="card">
+        <h2 className="card-title">Makine meşgulken</h2>
+        <p className="card-sub">
+          Duvar kağıdı pahalı hale gelmez; geri kalan her şey pahalı hale
+          gelir. Derleme, güncelleme, oyun yüklenirken duvar kağıdı yoldan
+          çekilsin. Ölçüm makinenin tamamına ait ve saniyede bir okunuyor.
+          {status &&
+            (status.busy
+              ? ` Şu an geri çekildi (makinenin %${Math.round(status.load)}'i kullanımda).`
+              : ` Şu an makinenin %${Math.round(status.load)}'i kullanımda.`)}
+        </p>
+        <div className="options">
+          {BUSY_RATES.map((rate) => (
+            <button
+              key={rate.value}
+              className="option compact"
+              data-active={(status?.busy_fps ?? store.settings.busyFps) === rate.value}
+              onClick={() =>
+                void apply(() => engine.setBusyFps(rate.value), { busyFps: rate.value })
+              }
+            >
+              {rate.label}
+            </button>
+          ))}
+        </div>
+        <div className="row">
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={status?.reduce_motion ?? store.settings.reduceMotion}
+              onChange={(e) =>
+                void apply(() => engine.setReduceMotion(e.target.checked), {
+                  reduceMotion: e.target.checked,
+                })
+              }
+            />
+            <span>Windows "animasyonları göster" kapalıysa hiç oynatma</span>
+          </label>
+        </div>
       </section>
 
       <section className="card">
@@ -441,6 +586,236 @@ export default function Settings({ store, status, onChange, onRefresh }: Props) 
           {status?.ducking && <span className="muted">şu an geri çekildi</span>}
         </div>
       </section>
+
+      <section className="card">
+        <h2 className="card-title">Bellek</h2>
+        <p className="card-sub">
+          Bir videonun belleği neredeyse tamamen çözücünün kare tamponudur ve
+          onu belirleyen tek şey karenin boyutudur. Bütçe seçmek, çözücüden
+          daha küçük kare istemek demek — küçük ekranda zaten görünmeyen
+          pikseller.
+          {status && ` Motor şu an ${status.ram_mb} MB kullanıyor.`}
+        </p>
+        <div className="options">
+          {BUDGETS.map((budget) => (
+            <button
+              key={budget.value}
+              className="option"
+              data-active={(status?.memory_mb ?? store.settings.memoryMb) === budget.value}
+              onClick={() =>
+                void apply(() => engine.setMemory(budget.value), { memoryMb: budget.value })
+              }
+            >
+              <span className="option-label">{budget.label}</span>
+              <span className="option-help">{budget.help}</span>
+            </button>
+          ))}
+        </div>
+        <p className="card-sub">
+          Değiştirmek oynayan her klibi baştan açar — kısa bir duraklama
+          görürsün. Kalıcı çözüm kitaplıktaki <strong>Hafiflet</strong>:
+          klibi bir kez küçük yazar, sonra hiçbir maliyeti olmaz.
+        </p>
+      </section>
+
+      <section className="card">
+        <h2 className="card-title">Görünmezken</h2>
+        <p className="card-sub">
+          Masaüstü kapalıyken çizim zaten duruyor. Duran şey çözücü değil —
+          tam ekran oyun açıkken kare tamponları bellekte kalmaya devam
+          ediyor. Bu süre dolunca motor onları da bırakır; ekran son karede
+          kalır, masaüstü göründüğünde geri açılır.
+          {status?.hibernating && ' Şu an bırakılmış durumda.'}
+        </p>
+        <div className="options">
+          {HIBERNATES.map((option) => (
+            <button
+              key={option.value}
+              className="option"
+              data-active={(status?.hibernate_secs ?? store.settings.hibernateSecs) === option.value}
+              onClick={() =>
+                void apply(() => engine.setHibernate(option.value), {
+                  hibernateSecs: option.value,
+                })
+              }
+            >
+              <span className="option-label">{option.label}</span>
+              <span className="option-help">{option.help}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="card">
+        <h2 className="card-title">Hareket</h2>
+        <p className="card-sub">
+          İkisi de kareyi nereden örneklediğimizi değiştirir — fazladan geçiş,
+          doku veya bellek yok. Kapalıyken hiçbir şey ölçülmez: ne ses
+          ölçeri açılır ne imleç sorulur.
+        </p>
+
+        <div className="row">
+          <label className="slider-label">Sese tepki</label>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={motion.reactive}
+            onChange={(e) => setMotion({ ...motion, reactive: Number(e.target.value) })}
+            {...releases(pushMotion)}
+          />
+          <span className="fps-value">{Math.round(motion.reactive * 100)}%</span>
+        </div>
+        <p className="card-sub">
+          Makineden çıkan sesin tamamını ölçer — çalan neyse odur, Muivly
+           kendi sesi kapalı olsa bile.
+        </p>
+
+        <div className="row">
+          <label className="slider-label">İmleç paralaksı</label>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={motion.parallax}
+            onChange={(e) => setMotion({ ...motion, parallax: Number(e.target.value) })}
+            {...releases(pushMotion)}
+          />
+          <span className="fps-value">{Math.round(motion.parallax * 100)}%</span>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2 className="card-title">Duran görselde sürüklenme</h2>
+        <p className="card-sub">
+          Bir fotoğraf Muivly'nin gösterebileceği en ucuz duvar kağıdı: bir
+          kez çözülür, bir kez yüklenir, sonra hiçbir maliyeti kalmaz. Bu
+          ayar onu hareketlendirir ama çözücü eklemez — kareden hangi
+          bölgenin örneklendiği çok yavaş kayar, doku yok, geçiş yok. Tek
+          bedeli ekranın kare hızında yeniden çizilmesi.
+        </p>
+        <div className="options">
+          {DRIFTS.map((option) => (
+            <button
+              key={option.value}
+              className="option"
+              data-active={(status?.drift ?? store.settings.drift) === option.value}
+              onClick={() =>
+                void apply(() => engine.setDrift(option.value), { drift: option.value })
+              }
+            >
+              <span className="option-label">{option.label}</span>
+              <span className="option-help">{option.help}</span>
+            </button>
+          ))}
+        </div>
+        <p className="card-sub">
+          Yalnız fotoğraflara uygulanır. Video, GIF ve shader zaten
+          hareketli; ikisi üst üste binerse tek bir resim değil, birbiriyle
+          kavga eden iki hareket olur.
+        </p>
+      </section>
+
+      <section className="card">
+        <h2 className="card-title">Vurgu rengi</h2>
+        <p className="card-sub">
+          Windows'un vurgu rengi duvar kağıdından gelsin. Renk, ekrandaki
+          karenin 16×9 küçültülmüş halinden okunuyor — duvar kağıdı
+          değiştiğinde, kare başına değil. Okunabilir kalması için parlaklığı
+          bir aralığa çekiliyor.
+        </p>
+        <div className="row">
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={status?.accent ?? store.settings.accent}
+              onChange={(e) =>
+                void apply(() => engine.setAccent(e.target.checked), {
+                  accent: e.target.checked,
+                })
+              }
+            />
+            <span>Vurgu rengi duvar kağıdını izlesin</span>
+          </label>
+        </div>
+        <p className="card-sub">
+          Yazılan her şey <code>HKEY_CURRENT_USER</code> altında ve
+          kendinden önceki değerler bir dosyaya yedekleniyor. Kapattığında,
+          motoru kapattığında ya da motor çökerse bir sonraki açılışta senin
+          kendi renklerin geri konur. Görev çubuğu bazen bir sonraki oturum
+          açılışını bekler — orası Windows'un bileceği iş.
+        </p>
+      </section>
+
+      {status && status.uptime_secs > 0 && (
+        <section className="card">
+          <h2 className="card-title">Ne kadarı boşa gitmedi</h2>
+          <p className="card-sub">
+            Bu projenin tamamı bu sayı için var ve şimdiye kadar görebildiğin
+            tek yer Görev Yöneticisi'ydi. Motor{' '}
+            <strong>{longDuration(status.uptime_secs)}</strong> çalıştı, bunun{' '}
+            <strong>{longDuration(status.resting_secs)}</strong> kadarında
+            hiçbir şey çizmedi — ekran kapalıydı, üstü örtülüydü, donmuştu ya
+            da başında kimse yoktu.
+          </p>
+          <div className="row">
+            <div className="rest-bar" aria-hidden="true">
+              <span
+                style={{
+                  width: `${Math.min(
+                    100,
+                    Math.round((status.resting_secs / Math.max(1, status.uptime_secs)) * 100),
+                  )}%`,
+                }}
+              />
+            </div>
+            <span className="fps-value">
+              %{Math.round((status.resting_secs / Math.max(1, status.uptime_secs)) * 100)}
+            </span>
+          </div>
+          <p className="card-sub">
+            Motorun bu açılışından beri. Kendi makinende ölçmek istersen{' '}
+            <code>muivly-core --benchmark &lt;dosya&gt;</code> yarım dakika
+            oynatıp CPU, bellek ve kare tablosunu basar.
+          </p>
+        </section>
+      )}
+
+      <section className="card">
+        <h2 className="card-title">Uygulama kuralları</h2>
+        <p className="card-sub">
+          Buradaki uygulamalardan biri öndeyken duvar kağıdı donar: son kare
+          ekranda kalır, çözme ve çizme durur. Tam ekran oyun zaten masaüstünü
+          kapattığı için gerekmez — bu, masaüstünü kapatmayan ama makineyi
+          isteyen işler için: render, derleme, görüntülü görüşme.
+        </p>
+        <div className="row">
+          <input
+            type="text"
+            className="grow"
+            placeholder="photoshop, blender, obs64"
+            value={appsDraft ?? apps.join(", ")}
+            onChange={(e) => setAppsDraft(e.target.value)}
+            onBlur={pushApps}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur()
+            }}
+          />
+        </div>
+        <p className="card-sub">
+          Virgülle ayır. <code>.exe</code> yazmak zorunda değilsin.
+        </p>
+      </section>
+
+      <Automation
+        store={store}
+        rules={status?.rules ?? []}
+        onChange={(rules: Rule[]) => {
+          void engine.setRules(rules).then(onRefresh)
+        }}
+      />
 
       <section className="card">
         <h2 className="card-title">Kısayollar ve menü</h2>

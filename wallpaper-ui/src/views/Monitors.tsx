@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import Thumb from '../components/Thumb'
 import {
   displayName,
@@ -156,6 +158,24 @@ function OwnSettings({
 }
 
 export default function Monitors({ store, monitors, status, onAssign, onRefresh }: Props) {
+  // A scene is named before it is saved, and saving over a name replaces it —
+  // which is what somebody means by saving twice.
+  const [sceneName, setSceneName] = useState('')
+  const [sceneError, setSceneError] = useState<string | null>(null)
+
+  async function saveScene() {
+    const name = sceneName.trim()
+    if (name.length === 0) return
+    setSceneError(null)
+    try {
+      await engine.saveScene(name)
+      setSceneName('')
+      onRefresh()
+    } catch (e) {
+      setSceneError(String(e))
+    }
+  }
+
   // The layout preview draws the real desktop arrangement, scaled down. Two
   // screens side by side should look side by side here too, or picking the
   // right one becomes guesswork.
@@ -191,6 +211,81 @@ export default function Monitors({ store, monitors, status, onAssign, onRefresh 
           </p>
         </div>
       </header>
+
+      <div className="card">
+        <h2 className="card-title">Sahneler</h2>
+        <p className="card-sub">
+          Hangi ekranda ne olduğunu bir isimle kaydeder. Geri çağırmak, her
+          ekranı tek tek atamakla aynı iş — tek mesajda. Sahne yalnız duvar
+          kağıtlarını taşır: parlaklık, kare hızı ve gerisi masaüstünün
+          ayarı, sahnenin değil.
+        </p>
+
+        <div className="row">
+          <input
+            type="text"
+            className="grow"
+            placeholder="Sahne adı — Çalışma, Gece, Oyun"
+            value={sceneName}
+            maxLength={40}
+            onChange={(e) => setSceneName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void saveScene()
+            }}
+          />
+          <button
+            className="primary"
+            disabled={!status || sceneName.trim().length === 0}
+            onClick={() => void saveScene()}
+          >
+            Şu anki hâli kaydet
+          </button>
+        </div>
+
+        {sceneError && <p className="error-text">{sceneError}</p>}
+
+        {(status?.scenes ?? []).length === 0 ? (
+          <p className="card-sub">Henüz kayıtlı sahne yok.</p>
+        ) : (
+          <div className="options">
+            {(status?.scenes ?? []).map((scene) => (
+              <div className="scene" key={scene.name}>
+                <button
+                  className="option compact"
+                  onClick={() => {
+                    setSceneError(null)
+                    void engine
+                      .loadScene(scene.name)
+                      .then(onRefresh)
+                      .catch((e) => setSceneError(String(e)))
+                  }}
+                  title={scene.monitors
+                    .map(
+                      ([name, items]) =>
+                        `${displayName(name)}: ${items.length === 0 ? 'boş' : `${items.length} öğe`}`,
+                    )
+                    .join(' · ')}
+                >
+                  {scene.name}
+                </button>
+                <button
+                  className="icon"
+                  aria-label={`${scene.name} sahnesini sil`}
+                  onClick={() => {
+                    setSceneError(null)
+                    void engine
+                      .deleteScene(scene.name)
+                      .then(onRefresh)
+                      .catch((e) => setSceneError(String(e)))
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {monitors.length > 1 && (
         <div className="card">

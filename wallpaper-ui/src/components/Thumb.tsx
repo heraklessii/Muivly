@@ -9,6 +9,11 @@ import { convertFileSrc } from '@tauri-apps/api/core'
  *  itself as the "could not read this file" tile. An `<img>` animates it. */
 const STILL = /\.(png|jpe?g|bmp|webp|gif)$/i
 
+/** Shaders. There is nothing for the WebView to show: the picture does not
+ *  exist until the engine's GPU runs the program. A tile that says so is a
+ *  better answer than a `<video>` failing and reading as a broken file. */
+const SHADER = /\.(hlsl|fx)$/i
+
 /** What the file turns out to be, once the WebView has looked at it. */
 export type Meta = {
   width: number
@@ -69,6 +74,7 @@ export default function Thumb({ path, seconds = 1, play = false, onMeta }: Props
   const video = useRef<HTMLVideoElement | null>(null)
   const watcher = useRef<IntersectionObserver | null>(null)
   const still = STILL.test(path)
+  const shader = SHADER.test(path)
 
   /**
    * Watch whichever element is currently standing in for this tile — the
@@ -117,6 +123,16 @@ export default function Thumb({ path, seconds = 1, play = false, onMeta }: Props
       element.currentTime = Math.min(seconds, Math.max(0, element.duration - 0.1))
     }
   }, [play, state, seconds, still])
+
+  // Nothing to load, so no observer and no loading state: the tile is its
+  // own final answer.
+  if (shader) {
+    return (
+      <div className="thumb thumb-shader" title="Shader — önizlemesi motorda çizilir">
+        <span>&lt;/&gt;</span>
+      </div>
+    )
+  }
 
   if (state === 'failed') {
     return (

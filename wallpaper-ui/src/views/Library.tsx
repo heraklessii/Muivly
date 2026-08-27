@@ -16,29 +16,44 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import Thumb, { type Meta } from '../components/Thumb'
 import {
+  canOptimize,
   disk,
   displayName,
   duration,
+  engine,
   fileSize,
+  isShader,
   pack,
   pickPackageDestination,
   pickVideos,
   resolutionLabel,
   steam,
+  worthLightening,
+  oversizeFactor,
   type FileInfo,
   type Monitor,
+  type Optimize,
+  type ShaderFile,
 } from '../api'
 import { newId, withPaths, type Item, type Store } from '../store'
 
 type Props = {
   store: Store
   monitors: Monitor[]
+  /** A clip being rewritten smaller, or the one that just finished. */
+  optimize: Optimize | null
+  /** The settings each shader on screen declares for itself. Empty for
+   *  everybody who has never put one on a screen. */
+  shaders: ShaderFile[]
   onChange: (next: Store) => void
   onAssign: (monitorName: string, itemId: string) => void
+  /** Ask for a fresh status — a shader setting is only visible once the
+   *  engine has been asked about it again. */
+  onRefresh: () => void
 }
 
 type Sort = 'added' | 'title' | 'size' | 'length'
-type Filter = 'all' | 'video' | 'still' | 'live' | 'missing'
+type Filter = 'all' | 'video' | 'still' | 'shader' | 'live' | 'missing'
 
 const STILL = /\.(png|jpe?g|bmp|webp|gif)$/i
 
@@ -46,6 +61,7 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: 'all', label: 'Tümü' },
   { id: 'video', label: 'Video' },
   { id: 'still', label: 'Görsel' },
+  { id: 'shader', label: 'Shader' },
   { id: 'live', label: 'Ekranda' },
   { id: 'missing', label: 'Eksik' },
 ]
@@ -70,7 +86,15 @@ function date(epochMs: number): string {
   })
 }
 
-export default function Library({ store, monitors, onChange, onAssign }: Props) {
+export default function Library({
+  store,
+  monitors,
+  optimize,
+  shaders,
+  onChange,
+  onAssign,
+  onRefresh,
+}: Props) {
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [query, setQuery] = useState('')
@@ -85,6 +109,10 @@ export default function Library({ store, monitors, onChange, onAssign }: Props) 
   const [confirming, setConfirming] = useState<string | null>(null)
   /** The wallpaper whose details are open in the side panel. */
   const [detailId, setDetailId] = useState<string | null>(null)
+  /** The last rewrite whose output has already been added to the library.
+   *  The engine keeps reporting a finished job until the next one starts,
+   *  so without this the same file would be added on every poll. */
+  const [added, setAdded] = useState<string | null>(null)
   const [selected, setSelected] = useState<string[]>([])
 
   /** Size and date per path, and whether that answer has arrived yet. */
@@ -285,8 +313,9 @@ export default function Library({ store, monitors, onChange, onAssign }: Props) 
   const shown = useMemo(() => {
     const list = store.items.filter((item) => {
       if (needle && !item.title.toLocaleLowerCase('tr').includes(needle)) return false
-      if (filter === 'video') return !STILL.test(item.path)
+      if (filter === 'video') return !STILL.test(item.path) && !isShader(item.path)
       if (filter === 'still') return STILL.test(item.path)
+      if (filter === 'shader') return isShader(item.path)
       if (filter === 'live') return onScreen.has(item.id)
       if (filter === 'missing') return scanned && infos[item.path] === undefined
       return true
@@ -314,7 +343,73 @@ export default function Library({ store, monitors, onChange, onAssign }: Props) 
     return { bytes, stills, gone }
   }, [store.items, infos, scanned])
 
+  // A finished rewrite goes straight into the library. The whole point of
+  // the button is a lighter copy to use, and a file the user then has to go
+  // and find is a button that did not finish its job.
+  useEffect(() => {
+    const output = optimize?.output
+    if (!output || output === added) return
+    setAdded(output)
+
+    const next = withPaths(store, [output])
+    if (next !== store) onChange(next)
+  }, [optimize?.output, added, store, onChange])
+
   const detail = store.items.find((item) => item.id === detailId) ?? null
+  const rewriting = optimize && !optimize.output && !optimize.error
+
+  // The screen a clip would actually be rewritten for: the biggest one, which
+  // is what the engine picks. A clip that fits the big screen is not too big
+  // for the small one either.
+  const biggest = useMemo(() => {
+    return monitors.reduce(
+      (best, monitor) =>
+        monitor.width * monitor.height > best.width * best.height ? monitor : best,
+      { width: 0, height: 0 } as { width: number; height: number },
+    )
+  }, [monitors])
+
+  /** Whether this clip is decoding pixels the largest screen cannot show. */
+  const oversized = useCallback(
+    (id: string, path: string) => {
+      const facts = meta[id]
+      if (!facts || !canOptimize(path)) return false
+      return worthLightening(facts, biggest)
+    },
+    [meta, biggest],
+  )
+
+  // Whichever shader is being looked at, with the settings its own file
+  // declared. Only reported while it is on a screen: the settings come from
+  // the open decoder, and a file nobody is showing has none open.
+  const shaderOnScreen = detail
+    ? (shaders.find((shader) => shader.path === detail.path) ?? null)
+    : null
+
+  /**
+   * Held locally while a slider is being dragged, for the same reason the
+   * settings panel does it: status is polled, and a slider bound straight to
+   * the polled value jumps back under the cursor every time a poll lands.
+   */
+  const [shaderDraft, setShaderDraft] = useState<Record<string, number>>({})
+
+  // Dropped when the drawer moves to a different file, so one shader's
+  // values are never shown on another's sliders.
+  useEffect(() => {
+    setShaderDraft({})
+  }, [detailId])
+
+  const pushShader = useCallback(
+    (path: string) => {
+      const values = Object.entries(shaderDraft) as [string, number][]
+      if (values.length === 0) return
+      void engine
+        .setShaderParams(path, values)
+        .then(onRefresh)
+        .catch((e) => setError(String(e)))
+    },
+    [shaderDraft, onRefresh],
+  )
 
   // Escape closes whatever is open, innermost first.
   const escapeState = useRef({ detailId, menu, selected })
@@ -464,6 +559,21 @@ export default function Library({ store, monitors, onChange, onAssign }: Props) 
                   <span className="wp-kind">
                     {facts ? resolutionLabel(facts.width, facts.height) : extension(item.path)}
                   </span>
+
+                  {/* The clip is decoding pixels no screen here can show,
+                      every frame, for as long as it plays. Said on the tile
+                      because nobody goes looking for a rewrite button they
+                      have no reason to suspect they need. */}
+                  {oversized(item.id, item.path) && (
+                    <span
+                      className="wp-flag"
+                      data-tone="warning"
+                      data-corner="bottom"
+                      title="Ekranından büyük — Hafiflet belleği kalıcı olarak düşürür"
+                    >
+                      Ekranından büyük
+                    </span>
+                  )}
 
                   {/* Selection is always reachable, and stays visible for
                       anything already picked. */}
@@ -733,6 +843,112 @@ export default function Library({ store, monitors, onChange, onAssign }: Props) 
               ))}
               <option value="new">+ Yeni liste</option>
             </select>
+
+            {shaderOnScreen && (
+              <>
+                <div className="section-label">Bu shader'ın ayarları</div>
+                <p className="muted">
+                  Dosyanın kendi başındaki <code>// param</code> satırlarından
+                  geliyor. Değiştirmek anında uygulanır — yeniden derleme yok,
+                  yeniden açma yok; sabit tamponda bir sayı değişir.
+                </p>
+                {shaderOnScreen.params.map((param) => (
+                  <div className="row" key={param.name}>
+                    <label className="slider-label" title={param.name}>
+                      {param.label}
+                    </label>
+                    <input
+                      type="range"
+                      min={param.min}
+                      max={param.max}
+                      step={(param.max - param.min) / 100}
+                      value={shaderDraft[param.name] ?? param.value}
+                      onChange={(e) =>
+                        setShaderDraft((current) => ({
+                          ...current,
+                          [param.name]: Number(e.target.value),
+                        }))
+                      }
+                      onPointerUp={() => pushShader(detail.path)}
+                      onLostPointerCapture={() => pushShader(detail.path)}
+                      onKeyUp={() => pushShader(detail.path)}
+                      onBlur={() => pushShader(detail.path)}
+                    />
+                    <span className="fps-value">
+                      {(shaderDraft[param.name] ?? param.value).toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+                <div className="drawer-actions">
+                  <button
+                    onClick={() => {
+                      const defaults = Object.fromEntries(
+                        shaderOnScreen.params.map((p) => [p.name, p.default]),
+                      )
+                      setShaderDraft(defaults)
+                      void engine
+                        .setShaderParams(
+                          detail.path,
+                          Object.entries(defaults) as [string, number][],
+                        )
+                        .then(onRefresh)
+                        .catch((e) => setError(String(e)))
+                    }}
+                  >
+                    Dosyanın kendi değerlerine dön
+                  </button>
+                </div>
+              </>
+            )}
+
+            {canOptimize(detail.path) && (
+              <>
+                <div className="section-label">Hafiflet</div>
+
+                {/* The number, before the explanation: "four times bigger
+                    than your screen" is the whole argument, and it is
+                    different for every clip and every desktop. */}
+                {oversized(detail.id, detail.path) && (
+                  <p className="notice">
+                    Bu klip en büyük ekranının{' '}
+                    <strong>
+                      {oversizeFactor(meta[detail.id], biggest).toFixed(1)} katı
+                    </strong>{' '}
+                    piksel çözüyor — her kare, oynadığı sürece. Hafifletmek bunu
+                    kalıcı olarak bitirir.
+                  </p>
+                )}
+
+                <p className="muted">
+                  Klibi en büyük ekranının çözünürlüğünde bir kez yeniden
+                  yazar. Çözücünün belleğini belirleyen iki şey var: kare
+                  boyutu ve kodlayıcının tuttuğu referans kare sayısı. Yeniden
+                  yazarken ikisi de düşürülür — 4K bir klip 1080p ekranda
+                  görünmeyen pikselleri her kare yeniden çözüyor. Bir kez
+                  sürer, sonra hep ucuzdur.
+                </p>
+                <div className="drawer-actions">
+                  <button
+                    disabled={missing(detail) || Boolean(rewriting)}
+                    onClick={() =>
+                      void engine.optimize(detail.path).catch((e) => setError(String(e)))
+                    }
+                  >
+                    {rewriting && optimize?.source === detail.path
+                      ? `Yazılıyor… %${optimize.percent}`
+                      : rewriting
+                        ? "Başka bir klip yazılıyor"
+                        : "Hafiflet"}
+                  </button>
+                </div>
+                {optimize?.error && optimize.source === detail.path && (
+                  <p className="error-text">{optimize.error}</p>
+                )}
+                {optimize?.output && optimize.source === detail.path && (
+                  <p className="muted">Bitti — hafif kopya kitaplığa eklendi.</p>
+                )}
+              </>
+            )}
 
             <div className="drawer-foot">
               <button

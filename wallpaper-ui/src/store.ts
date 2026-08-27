@@ -57,6 +57,29 @@ export type Settings = {
   batteryFps: number
   /** Freeze the wallpaper entirely while Windows battery saver is on. */
   pauseOnSaver: boolean
+  /** How long the desktop must stay out of sight before the engine hands
+   *  its decoders back. 0 keeps them open. */
+  hibernateSecs: number
+  /** How far the wallpaper answers to the sound coming out of the machine. */
+  reactive: number
+  /** How far it shifts under the cursor. */
+  parallax: number
+  /** A memory budget in megabytes; 0 leaves the detected tier's cap alone. */
+  memoryMb: number
+  /** Applications that freeze the wallpaper while they are in front. */
+  apps: string[]
+  /** How long the machine may sit untouched before the wallpaper stands
+   *  still. 0 never does. */
+  idleSecs: number
+  /** The frame rate while the machine is busy with something else. 0 keeps
+   *  one rate whatever else is running. */
+  busyFps: number
+  /** Honour Windows' "show animations" setting. */
+  reduceMotion: boolean
+  /** How far a photograph drifts on its own. 0 leaves it still. */
+  drift: number
+  /** Let the Windows accent colour follow the wallpaper. */
+  accent: boolean
 }
 
 export type Store = {
@@ -91,6 +114,16 @@ export const emptyStore: Store = {
     hotkeys: true,
     batteryFps: 24,
     pauseOnSaver: true,
+    hibernateSecs: 20,
+    reactive: 0,
+    parallax: 0,
+    memoryMb: 0,
+    apps: [],
+    idleSecs: 300,
+    busyFps: 10,
+    reduceMotion: true,
+    drift: 0,
+    accent: false,
   },
   onboarded: false,
 }

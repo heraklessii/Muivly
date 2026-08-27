@@ -45,6 +45,47 @@ export type MonitorState = {
   overrides: Overrides
 }
 
+/** One automation rule: when the wallpaper changes itself, and to what. */
+export type Rule = {
+  kind: 'time' | 'theme'
+  /** Minutes since midnight for `time`; 1 = dark, 0 = light for `theme`. */
+  value: number
+  items: string[]
+}
+
+/** One saved arrangement of wallpapers across the screens. */
+export type Scene = {
+  name: string
+  /** Device name, and what that screen was showing. */
+  monitors: [string, string[]][]
+}
+
+/** One setting a shader file declares for itself, and where it is set. */
+export type ShaderParam = {
+  name: string
+  min: number
+  max: number
+  default: number
+  value: number
+  /** What to call it on screen. The name, when the file did not say. */
+  label: string
+}
+
+/** A shader on screen, with the settings it asked for. */
+export type ShaderFile = {
+  path: string
+  params: ShaderParam[]
+}
+
+/** A clip being rewritten smaller, or the one that just finished. */
+export type Optimize = {
+  source: string
+  percent: number
+  /** Where the smaller copy landed, once it has. */
+  output: string | null
+  error: string | null
+}
+
 export type EngineStatus = {
   fps: number
   paused: boolean
@@ -68,6 +109,42 @@ export type EngineStatus = {
   /** One wallpaper stretched across every screen. */
   span: boolean
   hotkeys: boolean
+  /** How long out of sight before the engine hands its decoders back. */
+  hibernate_secs: number
+  /** Whether they are handed back right now — the memory is not in use. */
+  hibernating: boolean
+  /** How far the wallpaper answers to sound, and to the cursor. 0-1 each. */
+  reactive: number
+  parallax: number
+  /** A memory budget in megabytes; 0 is none. */
+  memory_mb: number
+  /** Applications that freeze the wallpaper while they are in front. */
+  apps: string[]
+  rules: Rule[]
+  /** Named arrangements of wallpapers across the screens. */
+  scenes: Scene[]
+  /** The settings each shader on screen declares for itself. */
+  shaders: ShaderFile[]
+  /** How long the machine may sit untouched before the wallpaper stands
+   *  still, and whether it is standing still right now. */
+  idle_secs: number
+  away: boolean
+  /** The frame rate while the machine is busy with something else, whether it
+   *  is, and how busy the last sample found the whole machine. */
+  busy_fps: number
+  busy: boolean
+  load: number
+  /** Whether Windows' reduce-motion setting is honoured. */
+  reduce_motion: boolean
+  /** How far a photograph drifts on its own, 0-1. */
+  drift: number
+  /** Whether the Windows accent colour follows the wallpaper. */
+  accent: boolean
+  /** How long the engine has been up, and how much of that it spent drawing
+   *  nothing at all — the number this whole project is about. */
+  uptime_secs: number
+  resting_secs: number
+  optimize: Optimize | null
   /** The frame rate cap while unplugged; 0 means the same as plugged in. */
   battery_fps: number
   pause_on_saver: boolean
@@ -127,6 +204,34 @@ export const engine = {
   setFade: (milliseconds: number) => invoke<void>('set_fade', { milliseconds }),
   setSpan: (span: boolean) => invoke<void>('set_span', { span }),
   setHotkeys: (enabled: boolean) => invoke<void>('set_hotkeys', { enabled }),
+  /** How long out of sight before the decoders are handed back. 0 never. */
+  setHibernate: (seconds: number) => invoke<void>('set_hibernate', { seconds }),
+  /** How far the wallpaper answers to sound and to the cursor. */
+  setMotion: (reactive: number, parallax: number) =>
+    invoke<void>('set_motion', { reactive, parallax }),
+  /** A memory budget in megabytes; 0 leaves the tier's own cap in place. */
+  setMemory: (megabytes: number) => invoke<void>('set_memory', { megabytes }),
+  setApps: (names: string[]) => invoke<void>('set_apps', { names }),
+  setRules: (rules: Rule[]) => invoke<void>('set_rules', { rules }),
+  /** Rewrite one clip at the size of the largest screen, once. */
+  optimize: (path: string) => invoke<void>('optimize', { path }),
+  /** Stand still after this long with nobody touching the machine. 0 never. */
+  setIdle: (seconds: number) => invoke<void>('set_idle', { seconds }),
+  /** The frame rate while the machine is busy. 0 keeps one rate. */
+  setBusyFps: (fps: number) => invoke<void>('set_busy_fps', { fps }),
+  /** Honour Windows' "show animations" setting. */
+  setReduceMotion: (enabled: boolean) => invoke<void>('set_reduce_motion', { enabled }),
+  /** How far a photograph drifts on its own, 0-1. */
+  setDrift: (drift: number) => invoke<void>('set_drift', { drift }),
+  /** Let the Windows accent colour follow the wallpaper. */
+  setAccent: (enabled: boolean) => invoke<void>('set_accent', { enabled }),
+  /** One shader file's own settings, all of them at once. */
+  setShaderParams: (path: string, values: [string, number][]) =>
+    invoke<void>('set_shader_params', { path, values }),
+  /** Save what is on every screen under a name, recall it, or forget it. */
+  saveScene: (name: string) => invoke<void>('scene', { action: 'save', name }),
+  loadScene: (name: string) => invoke<void>('scene', { action: 'load', name }),
+  deleteScene: (name: string) => invoke<void>('scene', { action: 'delete', name }),
   /** Stop the wallpaper where it stands, without taking it away. */
   setFrozen: (frozen: boolean) => invoke<void>('set_frozen', { frozen }),
   /** One monitor's own settings, all of them at once. */
@@ -248,6 +353,72 @@ export function displayName(deviceName: string): string {
   return deviceName.replace(/^\\\\\.\\/, '')
 }
 
+/** Whether this path is a shader rather than something to decode. */
+export function isShader(path: string): boolean {
+  return SHADER_EXTENSIONS.includes(path.split('.').pop()?.toLowerCase() ?? '')
+}
+
+/** Whether rewriting this file smaller could help. Only video: a photo is
+ *  decoded once and a shader is never decoded at all. */
+export function canOptimize(path: string): boolean {
+  return VIDEO_EXTENSIONS.includes(path.split('.').pop()?.toLowerCase() ?? '')
+}
+
+/**
+ * How much bigger this clip is than the screen it will be shown on.
+ *
+ * The whole reason "Lighten" exists: a decoder's memory is its frame size
+ * times its reference frames, and a 4K loop on a 1080p laptop is decoding
+ * four times the pixels that screen can show, forever. Below the threshold
+ * the rewrite is not worth the quality it costs.
+ *
+ * Returns 1 when there is nothing to gain, so a caller can treat the number
+ * as "times too big" and show it.
+ */
+export function oversizeFactor(
+  video: { width: number; height: number },
+  screen: { width: number; height: number },
+): number {
+  if (!video.width || !video.height || !screen.width || !screen.height) return 1
+  const factor = (video.width * video.height) / (screen.width * screen.height)
+  return factor > 1 ? factor : 1
+}
+
+/** Whether rewriting is worth suggesting: a third again as many pixels as the
+ *  screen can show is where the saving starts to be worth a re-encode. */
+export function worthLightening(
+  video: { width: number; height: number },
+  screen: { width: number; height: number },
+): boolean {
+  return oversizeFactor(video, screen) >= 1.35
+}
+
+/** Seconds as `4 sa 12 dk`, or `12 dk` — for durations measured in hours. */
+export function longDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '0 dk'
+
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (hours > 0) return `${hours} sa ${minutes} dk`
+  if (minutes > 0) return `${minutes} dk`
+  return `${Math.round(seconds)} sn`
+}
+
+/** `420` as `07:00` — minutes since midnight, the way a rule stores them. */
+export function clockLabel(minutes: number): string {
+  const clamped = Math.max(0, Math.min(24 * 60 - 1, Math.round(minutes)))
+  const hh = String(Math.floor(clamped / 60)).padStart(2, '0')
+  const mm = String(clamped % 60).padStart(2, '0')
+  return `${hh}:${mm}`
+}
+
+/** `07:00` back to 420. Anything unparseable is midnight. */
+export function clockMinutes(label: string): number {
+  const [hh, mm] = label.split(':').map((part) => Number.parseInt(part, 10))
+  if (!Number.isFinite(hh)) return 0
+  return Math.max(0, Math.min(24 * 60 - 1, hh * 60 + (Number.isFinite(mm) ? mm : 0)))
+}
+
 /** Last path segment, without the extension — a sensible default title. */
 export function fileTitle(path: string): string {
   const file = path.split(/[\\/]/).pop() ?? path
@@ -260,6 +431,11 @@ const VIDEO_EXTENSIONS = ['mp4', 'webm', 'mkv', 'mov', 'm4v', 'avi']
 /** Still images and GIFs, which the engine decodes with WIC instead. A photo
  *  costs nothing at all once it is on screen. */
 const IMAGE_EXTENSIONS = ['gif', 'png', 'jpg', 'jpeg', 'bmp', 'webp']
+
+/** Pixel shaders, which are not decoded at all — the lightest wallpaper
+ *  Muivly can show. One `mainImage(float2 uv)` function per file. `.glsl` and
+ *  `.frag` are Shadertoy shaders, translated by the engine on the way in. */
+const SHADER_EXTENSIONS = ['hlsl', 'fx', 'glsl', 'frag']
 
 /**
  * Ask the user for video files. Cancelling gives an empty array rather than
@@ -291,9 +467,13 @@ export async function pickVideos(): Promise<string[]> {
   const picked = await open({
     multiple: true,
     filters: [
-      { name: 'Duvar kağıdı', extensions: [...VIDEO_EXTENSIONS, ...IMAGE_EXTENSIONS] },
+      {
+        name: 'Duvar kağıdı',
+        extensions: [...VIDEO_EXTENSIONS, ...IMAGE_EXTENSIONS, ...SHADER_EXTENSIONS],
+      },
       { name: 'Video', extensions: VIDEO_EXTENSIONS },
       { name: 'Görsel', extensions: IMAGE_EXTENSIONS },
+      { name: 'Shader', extensions: SHADER_EXTENSIONS },
     ],
   })
   if (!picked) return []
