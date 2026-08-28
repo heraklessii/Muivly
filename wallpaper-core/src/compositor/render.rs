@@ -1037,6 +1037,30 @@ impl Renderer {
     /// and the caller can back off. A monitor whose frame has not changed
     /// still counts as live — it is on screen, it just cost nothing this time
     /// round.
+    /// Whether any screen is still showing something other than what it has
+    /// been asked to show.
+    ///
+    /// Standing still means the picture stops moving, not that it never
+    /// arrives. A wallpaper assigned while the engine is frozen — Windows
+    /// set to reduce motion, an application the user named in front, nobody
+    /// at the machine — still owes its screen the one frame it will then
+    /// hold. Without this the frame that never gets drawn is the *first*
+    /// one: the desktop keeps the Windows wallpaper, the UI reports a
+    /// wallpaper is playing, and the two never agree.
+    ///
+    /// A covered monitor owes nothing. Its frame cannot be presented while
+    /// something is in front of it, and counting it would hold the decoders
+    /// open for the whole of a fullscreen game — which is the one saving
+    /// hibernation exists for.
+    pub fn owes_a_frame(&self) -> bool {
+        self.targets.iter().any(|target| {
+            target.enabled
+                && target.video.is_some()
+                && target.redraw
+                && !crate::power::is_covered(&target.monitor)
+        })
+    }
+
     pub fn draw(&mut self, elapsed: Duration) -> windows::core::Result<Pass> {
         let time = elapsed.as_secs_f32();
 

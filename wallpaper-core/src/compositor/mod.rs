@@ -1358,15 +1358,32 @@ pub fn run(
             }
         }
 
+        // A frozen wallpaper has to be put on screen before it can stand
+        // still on it. Every reason to freeze can be true before the first
+        // frame was ever drawn — Windows set to reduce motion is true from
+        // the moment the engine starts — and a freeze that skipped that
+        // frame left the desktop on the Windows wallpaper for as long as the
+        // reason lasted, with nothing anywhere saying why.
+        let owed = stage.renderers.iter().any(|r| r.owes_a_frame());
+
         let elapsed = start.elapsed();
         let mut live = 0;
         let mut presented = 0;
-        if !frozen {
+        if !frozen || owed {
             for renderer in &mut stage.renderers {
                 let pass = renderer.draw(elapsed)?;
                 live += pass.live;
                 presented += pass.presented;
             }
+        }
+
+        // Worth saying out loud: "still" and "paused" both look like nothing
+        // is happening, and this is the line that separates a wallpaper
+        // standing still on screen from one that never got there.
+        // Only ever once per owed frame: presenting it is what stops it
+        // being owed.
+        if frozen && owed && presented > 0 {
+            println!("still: drew the frame it will hold");
         }
 
         // A file that would not open does not stop anything; it is a message
@@ -1406,8 +1423,13 @@ pub fn run(
             hidden_since = None;
         }
 
+        // Handing the decoders back before the owed frame has been drawn
+        // would leave the screen showing the wallpaper before last, with no
+        // decoder left to correct it — a wallpaper changed while the engine
+        // is frozen would simply never appear.
         let want_idle = settings.hibernate_secs > 0
             && paused
+            && !owed
             && hidden_since.is_some_and(|since| {
                 since.elapsed() >= Duration::from_secs(settings.hibernate_secs)
             });
