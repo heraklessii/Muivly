@@ -53,10 +53,15 @@ jobs:
         # Node's own argv parsing, and it did not: the Tauri CLI was handed
         # the backslashes literally and refused the config with "key must be
         # a string at line 1 column 2". A path has nothing to escape.
+        #
+        # A map, not a list: given a list the bundler keeps the staging
+        # subdirectory, and the engine installs to binaries\muivly-core.exe
+        # while the UI looks for it next to itself. The map names the
+        # destination.
         run: |
           [System.IO.File]::WriteAllText(
             "$PWD/bundle.json",
-            '{"bundle":{"resources":["binaries/muivly-core.exe"]}}'
+            '{"bundle":{"resources":{"binaries/muivly-core.exe":"muivly-core.exe"}}}'
           )
           npx tauri build --config bundle.json
 

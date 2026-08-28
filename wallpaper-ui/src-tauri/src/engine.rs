@@ -22,6 +22,10 @@ pub fn engine_path() -> Option<PathBuf> {
     let candidates = [
         // Installed: the engine sits next to the UI.
         dir.join("muivly-core.exe"),
+        // Installers built before the bundler was told where to put the
+        // engine left it in the subdirectory it was staged from, so an
+        // upgrade over one of those still finds it.
+        dir.join("binaries/muivly-core.exe"),
         // Development: cargo puts both under the workspace target directory,
         // but the UI has its own workspace, so it is two levels up.
         dir.join("../../../../target/release/muivly-core.exe"),
