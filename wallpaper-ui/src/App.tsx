@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 
-import { engine, type EngineStatus, type Monitor } from './api'
+import { engine, isPlayable, pack, type EngineStatus, type Monitor } from './api'
 import {
   emptyStore,
   loadStore,
@@ -63,6 +64,8 @@ export default function App() {
   const [monitors, setMonitors] = useState<Monitor[]>([])
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
+  /** Whether something is being dragged over the window right now. */
+  const [dropping, setDropping] = useState(false)
 
   useEffect(() => {
     void loadStore().then((next) => {
@@ -175,6 +178,90 @@ export default function App() {
     [],
   )
 
+  // Read by the drop handler, which is registered once and must not be torn
+  // down and rebuilt every time the library changes — a listener replaced
+  // mid-drag misses the drop it was waiting for.
+  const storeRef = useRef(store)
+  storeRef.current = store
+
+  /**
+   * Files dropped on the window.
+   *
+   * The same thing the Ekle button does, minus the trip through the picker.
+   * A `.muivly` package is unpacked first — dropping one is the obvious way
+   * to open it, and the file inside is what belongs in the library.
+   */
+  const addDropped = useCallback(
+    async (paths: string[]) => {
+      const packages = paths.filter((path) => path.toLowerCase().endsWith('.muivly'))
+      const files = paths.filter(isPlayable)
+
+      if (packages.length === 0 && files.length === 0) {
+        setError('Bırakılan dosyalar arasında oynatılabilir bir şey yok.')
+        return
+      }
+
+      // The package knows a better name for its wallpaper than the file it
+      // unpacked to does.
+      const titles = new Map<string, string>()
+      for (const packageFile of packages) {
+        try {
+          const imported = await pack.import(packageFile)
+          files.push(imported.path)
+          titles.set(imported.path, imported.title)
+        } catch (e) {
+          setError(String(e))
+        }
+      }
+
+      const current = storeRef.current
+      const next = withPaths(current, files)
+      if (next === current) {
+        setError('Bırakılanların hepsi zaten kitaplıkta.')
+        return
+      }
+
+      persist({
+        ...next,
+        items: next.items.map((item) => ({
+          ...item,
+          title: titles.get(item.path) ?? item.title,
+        })),
+      })
+      setError(null)
+      setView('library')
+    },
+    [persist],
+  )
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let live = true
+
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === 'enter') setDropping(true)
+        else if (event.payload.type === 'leave') setDropping(false)
+        else if (event.payload.type === 'drop') {
+          setDropping(false)
+          void addDropped(event.payload.paths)
+        }
+      })
+      .then((off) => {
+        // The window can be gone before the promise settles.
+        if (live) unlisten = off
+        else off()
+      })
+      .catch(() => {
+        // Not fatal: the Ekle button is still there.
+      })
+
+    return () => {
+      live = false
+      unlisten?.()
+    }
+  }, [addDropped])
+
   /**
    * Record an assignment and tell the engine about it in one step.
    * Throws on failure, so a caller with its own place to put an error can
@@ -238,24 +325,39 @@ export default function App() {
     return <div className="app-loading" />
   }
 
+  // Over whatever is on screen, the walkthrough included: dropping a file is
+  // the fastest way through the "add a video" step too.
+  const dropHint = dropping ? (
+    <div className="dropzone" aria-hidden="true">
+      <div className="dropzone-box">
+        <strong>Bırak, kitaplığa eklensin</strong>
+        <span>Video, görsel, shader ya da .muivly paketi</span>
+      </div>
+    </div>
+  ) : null
+
   // The walkthrough owns the whole window: before there is a wallpaper the
   // sidebar has nothing worth navigating to.
   if (!store.onboarded) {
     return (
-      <Onboarding
-        store={store}
-        status={status}
-        monitors={monitors}
-        onChange={persist}
-        onStartEngine={startEngine}
-        onApply={(monitorName, itemId) => assign(monitorName, { kind: 'item', id: itemId })}
-        onFinish={() => persist({ ...store, onboarded: true })}
-      />
+      <>
+        {dropHint}
+        <Onboarding
+          store={store}
+          status={status}
+          monitors={monitors}
+          onChange={persist}
+          onStartEngine={startEngine}
+          onApply={(monitorName, itemId) => assign(monitorName, { kind: 'item', id: itemId })}
+          onFinish={() => persist({ ...store, onboarded: true })}
+        />
+      </>
     )
   }
 
   return (
     <div className="shell">
+      {dropHint}
       <nav className="sidebar" aria-label="Ana menü">
         <div className="wordmark">
           Mui<span>vly</span>

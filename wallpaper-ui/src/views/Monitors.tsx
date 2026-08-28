@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import Thumb from '../components/Thumb'
 import {
@@ -162,6 +162,18 @@ export default function Monitors({ store, monitors, status, onAssign, onRefresh 
   // which is what somebody means by saving twice.
   const [sceneName, setSceneName] = useState('')
   const [sceneError, setSceneError] = useState<string | null>(null)
+  /** A scene is forgotten on the second click, not the first. */
+  const [confirming, setConfirming] = useState<string | null>(null)
+
+  // The layout map above and the cards below are the same screens twice;
+  // clicking one should take you to the other, or the map is decoration.
+  const cards = useRef(new Map<string, HTMLElement>())
+  const [pointed, setPointed] = useState<string | null>(null)
+
+  function reveal(name: string) {
+    setPointed(name)
+    cards.current.get(name)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
 
   async function saveScene() {
     const name = sceneName.trim()
@@ -267,10 +279,25 @@ export default function Monitors({ store, monitors, status, onAssign, onRefresh 
                 >
                   {scene.name}
                 </button>
+                {/* Asks once. A scene is a minute of arranging screens, and
+                    an × next to the button that recalls it is easy to hit by
+                    accident. */}
                 <button
                   className="icon"
-                  aria-label={`${scene.name} sahnesini sil`}
+                  data-armed={confirming === scene.name}
+                  aria-label={
+                    confirming === scene.name
+                      ? `${scene.name} sahnesini gerçekten sil`
+                      : `${scene.name} sahnesini sil`
+                  }
+                  title={confirming === scene.name ? 'Bir daha bas, silinsin' : 'Sil'}
+                  onBlur={() => setConfirming(null)}
                   onClick={() => {
+                    if (confirming !== scene.name) {
+                      setConfirming(scene.name)
+                      return
+                    }
+                    setConfirming(null)
                     setSceneError(null)
                     void engine
                       .deleteScene(scene.name)
@@ -323,28 +350,38 @@ export default function Monitors({ store, monitors, status, onAssign, onRefresh 
       {monitors.length > 1 && (
         <div className="card">
           <h2 className="card-title">Yerleşim</h2>
-          <p className="card-sub">Ekranlarının dizilişi.</p>
+          <p className="card-sub">
+            Ekranlarının dizilişi ve hangisinde ne olduğu. Birine tıklayınca o
+            ekranın ayarlarına gidilir.
+          </p>
           <div
             className="layout"
             style={{ width: spanWidth * scale, height: spanHeight * scale }}
           >
-            {monitors.map((m) => (
-              <div
-                key={m.name}
-                className="layout-screen"
-                data-off={
-                  status?.monitors.find((s) => s.name === m.name)?.enabled === false
-                }
-                style={{
-                  left: (m.x - bounds.left) * scale,
-                  top: (m.y - bounds.top) * scale,
-                  width: m.width * scale,
-                  height: m.height * scale,
-                }}
-              >
-                <span>{displayName(m.name)}</span>
-              </div>
-            ))}
+            {monitors.map((m) => {
+              const live = status?.monitors.find((s) => s.name === m.name)
+              const playing = live?.items[live.index]
+
+              return (
+                <button
+                  key={m.name}
+                  className="layout-screen"
+                  data-off={live?.enabled === false}
+                  data-pointed={pointed === m.name}
+                  title={`${displayName(m.name)} — ${assignmentLabel(store, store.assignments[m.name] ?? null)}`}
+                  style={{
+                    left: (m.x - bounds.left) * scale,
+                    top: (m.y - bounds.top) * scale,
+                    width: m.width * scale,
+                    height: m.height * scale,
+                  }}
+                  onClick={() => reveal(m.name)}
+                >
+                  {playing && <Thumb path={playing} />}
+                  <span>{displayName(m.name)}</span>
+                </button>
+              )
+            })}
           </div>
         </div>
       )}
@@ -356,7 +393,15 @@ export default function Monitors({ store, monitors, status, onAssign, onRefresh 
         const isPlaylist = (live?.items.length ?? 0) > 1
 
         return (
-          <section className="card" key={monitor.name}>
+          <section
+            className="card"
+            key={monitor.name}
+            data-pointed={pointed === monitor.name}
+            ref={(element) => {
+              if (element) cards.current.set(monitor.name, element)
+              else cards.current.delete(monitor.name)
+            }}
+          >
             <div className="row">
               <div>
                 <h2 className="card-title">

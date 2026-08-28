@@ -114,6 +114,9 @@ export default function Library({
    *  so without this the same file would be added on every poll. */
   const [added, setAdded] = useState<string | null>(null)
   const [selected, setSelected] = useState<string[]>([])
+  /** The last tile ticked, so shift-clicking has something to reach from. */
+  const lastPicked = useRef<string | null>(null)
+  const searchBox = useRef<HTMLInputElement>(null)
 
   /** Size and date per path, and whether that answer has arrived yet. */
   const [infos, setInfos] = useState<Record<string, FileInfo>>({})
@@ -302,7 +305,39 @@ export default function Library({
     })
   }
 
-  function toggleSelected(id: string) {
+  /**
+   * Tick one tile, or — with shift held — everything between it and the last
+   * one ticked.
+   *
+   * Over the grid as it is currently sorted and filtered, which is the order
+   * on screen and so the only range that means anything to whoever is
+   * dragging their eye across it. Picking twenty wallpapers out of a hundred
+   * was twenty clicks before this.
+   */
+  function toggleSelected(id: string, extend: boolean) {
+    const anchor = lastPicked.current
+
+    if (extend && anchor !== null && anchor !== id) {
+      const from = shown.findIndex((item) => item.id === anchor)
+      const to = shown.findIndex((item) => item.id === id)
+
+      if (from !== -1 && to !== -1) {
+        const range = shown
+          .slice(Math.min(from, to), Math.max(from, to) + 1)
+          .map((item) => item.id)
+
+        // Added to the selection rather than replacing it: shift-clicking a
+        // second run should not throw away the first.
+        setSelected((current) => [
+          ...current,
+          ...range.filter((other) => !current.includes(other)),
+        ])
+        lastPicked.current = id
+        return
+      }
+    }
+
+    lastPicked.current = id
     setSelected((current) =>
       current.includes(id) ? current.filter((other) => other !== id) : [...current, id],
     )
@@ -411,16 +446,36 @@ export default function Library({
     [shaderDraft, onRefresh],
   )
 
-  // Escape closes whatever is open, innermost first.
-  const escapeState = useRef({ detailId, menu, selected })
-  escapeState.current = { detailId, menu, selected }
+  // Escape closes whatever is open, innermost first; the rest is the handful
+  // of keys a grid of things is expected to answer to.
+  const keyState = useRef({ detailId, menu, selected, shown })
+  keyState.current = { detailId, menu, selected, shown }
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return
-      const current = escapeState.current
-      if (current.menu) setMenu(null)
-      else if (current.detailId) setDetailId(null)
-      else if (current.selected.length > 0) setSelected([])
+      const current = keyState.current
+
+      if (e.key === 'Escape') {
+        if (current.menu) setMenu(null)
+        else if (current.detailId) setDetailId(null)
+        else if (current.selected.length > 0) setSelected([])
+        return
+      }
+
+      // Everything below would otherwise be swallowed by whatever field has
+      // the caret — a rename box has its own use for Ctrl+A.
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return
+
+      if (e.key === '/' && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        searchBox.current?.focus()
+        return
+      }
+
+      if (e.key.toLowerCase() === 'a' && e.ctrlKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault()
+        setSelected(current.shown.map((item) => item.id))
+      }
     }
 
     window.addEventListener('keydown', onKey)
@@ -473,11 +528,18 @@ export default function Library({
           <div className="spacer" />
 
           <input
+            ref={searchBox}
             className="search"
             type="search"
-            placeholder="Ara"
+            placeholder="Ara — /"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setQuery('')
+                e.currentTarget.blur()
+              }
+            }}
           />
 
           <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
@@ -496,7 +558,7 @@ export default function Library({
           <p>
             Video ekleyerek başla — mp4 ve webm dosyaları çalışır. Fotoğraf
             da olur; fotoğraf duvar kağıdı ekrana geldikten sonra bilgisayarını
-            hiç yormaz.
+            hiç yormaz. Dosyaları doğrudan pencereye de sürükleyebilirsin.
           </p>
           <div className="row center-row">
             <button className="primary" onClick={add}>
@@ -581,7 +643,8 @@ export default function Library({
                     className="wp-check"
                     data-on={isSelected}
                     aria-label={isSelected ? 'Seçimi kaldır' : 'Seç'}
-                    onClick={() => toggleSelected(item.id)}
+                    title="Shift ile aradakilerin hepsi"
+                    onClick={(e) => toggleSelected(item.id, e.shiftKey)}
                   >
                     {isSelected ? '✓' : ''}
                   </button>
@@ -684,7 +747,9 @@ export default function Library({
           -------------------------------------------------------------- */}
       {selected.length > 0 && (
         <div className="bulk">
-          <span className="bulk-count">{selected.length} seçildi</span>
+          <span className="bulk-count">
+            {selected.length} / {shown.length} seçildi
+          </span>
 
           <select
             value=""
@@ -704,13 +769,23 @@ export default function Library({
             <option value="new">+ Yeni liste</option>
           </select>
 
-          <button onClick={() => setSelected(shown.map((item) => item.id))}>
+          <button
+            title="Ctrl+A"
+            onClick={() => setSelected(shown.map((item) => item.id))}
+          >
             Hepsini seç
           </button>
           <button className="danger" onClick={() => removeMany(selected)}>
             Kaldır
           </button>
-          <button onClick={() => setSelected([])}>Vazgeç</button>
+          <button
+            onClick={() => {
+              setSelected([])
+              lastPicked.current = null
+            }}
+          >
+            Vazgeç
+          </button>
         </div>
       )}
 

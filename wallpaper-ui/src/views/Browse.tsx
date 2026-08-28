@@ -132,6 +132,9 @@ export default function Browse({ have, onDownloaded }: Props) {
   const [busy, setBusy] = useState<string[]>([])
   /** Downloaded this session: id to the size on disk, for the card to show. */
   const [got, setGot] = useState<Record<string, number>>({})
+  /** Hide what is already downloaded. Off by default — the badge is enough
+   *  until the library has grown enough for it not to be. */
+  const [hideOwned, setHideOwned] = useState(false)
 
   // Kept in refs so the scroll observer below can read them without being
   // rebuilt — and torn down — on every page that arrives.
@@ -181,12 +184,27 @@ export default function Browse({ have, onDownloaded }: Props) {
     [],
   )
 
+  // Switching sections replaces the grid under a reader who may be a
+  // thousand pixels down it. Without this the new page arrives already
+  // scrolled past its own end, and the sentinel immediately asks for more.
+  const top = useRef<HTMLDivElement>(null)
+  const firstLoad = useRef(true)
+
   useEffect(() => {
     setItems([])
     setEnd(false)
     page.current = 1
     void load(section, search, 1)
+
+    if (firstLoad.current) firstLoad.current = false
+    else top.current?.scrollIntoView({ block: 'start' })
   }, [section, search, load])
+
+  /** Ask for the page that failed again, without losing what did arrive. */
+  function retry() {
+    setEnd(false)
+    void load(section, search, page.current)
+  }
 
   // Endless scroll: a sentinel below the grid asks for the next page as it
   // comes into view, so the common case — keep looking — costs no clicks.
@@ -243,8 +261,18 @@ export default function Browse({ have, onDownloaded }: Props) {
 
   const downloaded = Object.keys(got).length
 
+  /** Already on disk, either from an earlier session or from this one. */
+  function owned(item: Wallpaper): boolean {
+    return inLibrary(item) !== null || item.id in got
+  }
+
+  const visible = hideOwned ? items.filter((item) => !owned(item)) : items
+  const hidden = items.length - visible.length
+
   return (
     <>
+      <div ref={top} />
+
       <header className="view-head">
         <div>
           <h1 className="view-title">Keşfet</h1>
@@ -274,6 +302,16 @@ export default function Browse({ have, onDownloaded }: Props) {
         <button onClick={runSearch}>Ara</button>
 
         <div className="spacer" />
+
+        <button
+          className="chip"
+          data-active={hideOwned}
+          title="Zaten kitaplığında olanları listeden çıkar"
+          onClick={() => setHideOwned(!hideOwned)}
+        >
+          Kitaplıktakileri gizle
+          {hideOwned && hidden > 0 ? ` (${hidden})` : ''}
+        </button>
 
         {/* Which copy the download button fetches. */}
         <div className="chips">
@@ -317,21 +355,28 @@ export default function Browse({ have, onDownloaded }: Props) {
         </p>
       )}
 
-      {error && <p className="error-text">{error}</p>}
+      {error && (
+        <p className="error-text">
+          {error}{' '}
+          <button className="link" onClick={retry}>
+            tekrar dene
+          </button>
+        </p>
+      )}
 
       <div className="wall">
-        {items.map((item) => {
+        {visible.map((item) => {
           const downloading = busy.includes(item.id)
-          const owned = inLibrary(item) !== null || item.id in got
+          const have = owned(item)
 
           return (
-            <article className="wp" key={item.id} data-live={owned}>
+            <article className="wp" key={item.id} data-live={have}>
               <div className="wp-media">
                 <img className="thumb" src={item.thumb} alt="" loading="lazy" />
 
                 <span className="wp-kind">{resolution(item.size)}</span>
 
-                {owned && (
+                {have && (
                   <span className="wp-flag">
                     <span className="dot" />
                     Kitaplıkta
@@ -341,12 +386,12 @@ export default function Browse({ have, onDownloaded }: Props) {
                 <div className="wp-overlay" data-busy={downloading}>
                   <button
                     className="primary"
-                    disabled={downloading || owned}
+                    disabled={downloading || have}
                     onClick={() => void download(item)}
                   >
                     {downloading
                       ? 'İndiriliyor…'
-                      : owned
+                      : have
                         ? 'İndirildi'
                         : `İndir · ${quality === 'hd' ? '1080p' : '4K'}`}
                   </button>

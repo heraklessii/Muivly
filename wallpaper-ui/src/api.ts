@@ -361,6 +361,18 @@ export function isShader(path: string): boolean {
   return SHADER_EXTENSIONS.includes(path.split('.').pop()?.toLowerCase() ?? '')
 }
 
+/** Whether this is something the engine can put on a screen at all. The same
+ *  set the file picker offers, for the paths that arrive without one — a
+ *  file dropped on the window. */
+export function isPlayable(path: string): boolean {
+  const extension = path.split('.').pop()?.toLowerCase() ?? ''
+  return (
+    VIDEO_EXTENSIONS.includes(extension) ||
+    IMAGE_EXTENSIONS.includes(extension) ||
+    SHADER_EXTENSIONS.includes(extension)
+  )
+}
+
 /** Whether rewriting this file smaller could help. Only video: a photo is
  *  decoded once and a shader is never decoded at all. */
 export function canOptimize(path: string): boolean {
