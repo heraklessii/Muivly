@@ -893,3 +893,31 @@ iki kare hızı arasında gidip gelmesi demek — bu tasarruf gibi değil takıl
 gibi görünüyor.
 
 **Tuş kaydı yok:** Windows'un kendi sayacı okunuyor, kanca kurulmuyor.
+
+## 2026-08-28 — Kitaplık karosu video değil, yakalanmış tek kare
+
+**Karar:** `components/Thumb.tsx` artık ızgarada `<video>` tutmuyor. Dosya
+bir kez açılıyor, 1. saniyedeki kare 640px genişliğinde bir canvas'a çizilip
+JPEG blob'una çevriliyor, video bırakılıyor. Karo bir `<img>`. Gerçek video
+yalnızca imleç karonun üstündeyken var oluyor. Yakalama sırayla yapılıyor
+(tek seferde bir dosya) ve sonuçlar yol bazında bellekte tutuluyor.
+
+**Gerekçe — ölçüm:** Bu makinede (2560x1440 @180Hz, entegre GPU) kitaplıkta
+tek bir 3840x2160 klip varken ayar penceresi **bir çekirdeğin %60'ını ve
+~870 MB** harcıyordu; kitaplık boşken %1 / 405 MB. `<video>` bir resim değil,
+bir kompozit katmanı: elemanın kendisi durdurulmuş olsa bile ekranın
+tazeleme hızında yeniden kompozit ediliyor. Düzeltmeden sonra **on** 4K klip
+%1 / 537 MB. Motor bu sırada donmuş hâlde %0.1 harcıyordu — yani kullanıcının
+şikâyet ettiği kasma duvar kağıdından değil, ayar panelinden geliyordu.
+
+**Üç tuzak, üçü de ölçülerek bulundu:** (1) DOM'a bağlı olmayan bir `<video>`
+süresini ve boyutunu bildiriyor ama kare üretmiyor — `drawImage` siyah
+çiziyor; eleman gerçekten görünür olmalı (2px, %2 opaklık yetiyor).
+(2) `requestVideoFrameCallback` işe yaramıyor: yeni kare sunulduğunda
+tetikleniyor, seek'lenip duraklatılmış video bir daha kare sunmuyor.
+(3) CSP'de `img-src` içinde `blob:` yoktu; poster üretiliyor ama engelleniyordu.
+
+**Alternatif (reddedilmedi, ertelendi):** Kareyi motora ya da UI'nin Rust
+tarafına donanımda çözdürmek mimari olarak daha temiz. WebView zaten dosyayı
+bir kez açıyor ve maliyet tutmakta, çözmekte değil — bu yüzden şimdilik
+gerekmedi.
