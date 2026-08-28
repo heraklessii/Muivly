@@ -169,14 +169,54 @@ export default function App() {
   // Persisting is debounced: renaming a wallpaper types one character at a
   // time and each keystroke would otherwise be a disk write.
   const saveTimer = useRef<number | null>(null)
+  /** The state that has been changed but not yet written. */
+  const unsaved = useRef<Store | null>(null)
+
+  /**
+   * Write whatever is waiting, now.
+   *
+   * A failure is shown rather than dropped. It used to be a bare `void`, and
+   * a library that quietly stops saving looks exactly like a library that is
+   * saving — until the next launch, when a day of downloads is gone.
+   */
+  const flush = useCallback(() => {
+    if (saveTimer.current !== null) clearTimeout(saveTimer.current)
+    saveTimer.current = null
+
+    const next = unsaved.current
+    if (next === null) return
+    unsaved.current = null
+
+    void saveStore(next).catch((e) => setError(`Kitaplık kaydedilemedi: ${e}`))
+  }, [])
+
   const persist = useCallback(
     (next: Store) => {
       setStore(next)
+      unsaved.current = next
       if (saveTimer.current !== null) clearTimeout(saveTimer.current)
-      saveTimer.current = window.setTimeout(() => void saveStore(next), 300)
+      saveTimer.current = window.setTimeout(flush, 300)
     },
-    [],
+    [flush],
   )
+
+  // Three tenths of a second is nothing while somebody is typing and
+  // everything if the window goes away inside it. Closing this window only
+  // hides it — the app lives in the tray — so hiding is the moment to make
+  // sure what the user just did has reached the disk.
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.hidden) flush()
+    }
+
+    document.addEventListener('visibilitychange', onHidden)
+    window.addEventListener('pagehide', flush)
+
+    return () => {
+      document.removeEventListener('visibilitychange', onHidden)
+      window.removeEventListener('pagehide', flush)
+    }
+  }, [flush])
 
   // Read by the drop handler, which is registered once and must not be torn
   // down and rebuilt every time the library changes — a listener replaced
